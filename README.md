@@ -44,6 +44,31 @@ import { startAuthentication } from '@authkit/passkeys/browser';
 const response = await startAuthentication(opts);
 ```
 
+## Examples
+
+Three runnable examples live under [`examples/`](./examples). Each one drives
+the full server-side ceremony end-to-end against an in-process software
+authenticator stand-in for `navigator.credentials.*` — every
+`@authkit/passkeys/server` call executes against the real library code, so
+the output mirrors what a real browser would produce.
+
+| Example | What it shows | Open in browser |
+| --- | --- | --- |
+| [`basic-usage.ts`](./examples/basic-usage.ts) | Minimal end-to-end registration + discoverable login. | [![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/j09822475-dev/authkit-passkeys/tree/main/examples/sandbox/basic-usage) |
+| [`advanced-usage.ts`](./examples/advanced-usage.ts) | Branded `UserId`, signing-key rotation, AAGUID allowlist, audit hooks, counter-regression guard, enumeration-oracle defence. | [![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/j09822475-dev/authkit-passkeys/tree/main/examples/sandbox/advanced-usage) |
+| [`with-hono.ts`](./examples/with-hono.ts) | All four ceremony endpoints behind cookie-bound challenge tokens, exercised via `app.request()` — same code runs unchanged on Workers, Vercel Edge, Deno Deploy, Bun, Node. | [![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/j09822475-dev/authkit-passkeys/tree/main/examples/sandbox/with-hono) |
+
+```bash
+npx tsx examples/basic-usage.ts
+npx tsx examples/advanced-usage.ts
+npx tsx examples/with-hono.ts
+```
+
+The StackBlitz buttons open self-contained sandboxes from
+[`examples/sandbox/`](./examples/sandbox) — each subdirectory is a standalone
+npm project (`package.json` + `tsconfig.json` + `index.ts` + `README`) that
+installs `@authkit/passkeys` from the registry.
+
 ## API Reference
 
 The library is split across four published entry points so tree-shaking can drop the side you don't use.
