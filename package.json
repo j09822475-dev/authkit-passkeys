@@ -82,6 +82,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
     "lint": "eslint src tests",
     "format": "prettier --write \"{src,tests}/**/*.{ts,tsx,json,md}\"",
     "size": "size-limit",
