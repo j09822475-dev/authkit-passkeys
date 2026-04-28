@@ -1,0 +1,195 @@
+{
+  "name": "@authkit/passkeys",
+  "version": "0.1.0",
+  "description": "Lightweight, framework-agnostic Passkey/WebAuthn library — isomorphic core for browser, Node and edge runtimes, with adapters for Next.js, Hono, Express, Fastify, NestJS, tRPC, React, Vue and SvelteKit.",
+  "license": "MIT",
+  "author": "Mykhailo Kryvytskyi",
+  "homepage": "https://github.com/j09822475-dev/authkit-passkeys#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/j09822475-dev/authkit-passkeys.git"
+  },
+  "bugs": {
+    "url": "https://github.com/j09822475-dev/authkit-passkeys/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "browser": "./dist/browser/index.js",
+      "import": "./dist/browser/index.js",
+      "require": "./dist/browser/index.cjs"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/types/index.js",
+      "require": "./dist/types/index.cjs"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "import": "./dist/errors/index.js",
+      "require": "./dist/errors/index.cjs"
+    },
+    "./mds": {
+      "types": "./dist/mds/index.d.ts",
+      "import": "./dist/mds/index.js",
+      "require": "./dist/mds/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js",
+      "require": "./dist/react/index.cjs"
+    },
+    "./vue": {
+      "types": "./dist/vue/index.d.ts",
+      "import": "./dist/vue/index.js",
+      "require": "./dist/vue/index.cjs"
+    },
+    "./sveltekit": {
+      "types": "./dist/sveltekit/index.d.ts",
+      "import": "./dist/sveltekit/index.js",
+      "require": "./dist/sveltekit/index.cjs"
+    },
+    "./adapters/next": {
+      "types": "./dist/adapters/next/index.d.ts",
+      "import": "./dist/adapters/next/index.js",
+      "require": "./dist/adapters/next/index.cjs"
+    },
+    "./adapters/hono": {
+      "types": "./dist/adapters/hono/index.d.ts",
+      "import": "./dist/adapters/hono/index.js",
+      "require": "./dist/adapters/hono/index.cjs"
+    },
+    "./adapters/express": {
+      "types": "./dist/adapters/express/index.d.ts",
+      "import": "./dist/adapters/express/index.js",
+      "require": "./dist/adapters/express/index.cjs"
+    },
+    "./adapters/fastify": {
+      "types": "./dist/adapters/fastify/index.d.ts",
+      "import": "./dist/adapters/fastify/index.js",
+      "require": "./dist/adapters/fastify/index.cjs"
+    },
+    "./adapters/nestjs": {
+      "types": "./dist/adapters/nestjs/index.d.ts",
+      "import": "./dist/adapters/nestjs/index.js",
+      "require": "./dist/adapters/nestjs/index.cjs"
+    },
+    "./adapters/trpc": {
+      "types": "./dist/adapters/trpc/index.d.ts",
+      "import": "./dist/adapters/trpc/index.js",
+      "require": "./dist/adapters/trpc/index.cjs"
+    },
+    "./storage/memory": {
+      "types": "./dist/storage/memory.d.ts",
+      "import": "./dist/storage/memory.js",
+      "require": "./dist/storage/memory.cjs"
+    },
+    "./storage/prisma": {
+      "types": "./dist/storage/prisma.d.ts",
+      "import": "./dist/storage/prisma.js",
+      "require": "./dist/storage/prisma.cjs"
+    },
+    "./storage/drizzle": {
+      "types": "./dist/storage/drizzle.d.ts",
+      "import": "./dist/storage/drizzle.js",
+      "require": "./dist/storage/drizzle.cjs"
+    },
+    "./storage/kysely": {
+      "types": "./dist/storage/kysely.d.ts",
+      "import": "./dist/storage/kysely.js",
+      "require": "./dist/storage/kysely.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:bench": "vitest bench --run",
+    "lint": "eslint src tests",
+    "format": "prettier --write \"{src,tests}/**/*.{ts,tsx}\"",
+    "size": "size-limit",
+    "release": "changeset publish",
+    "prepublishOnly": "npm run build && npm run typecheck && npm run test"
+  },
+  "keywords": [
+    "passkey",
+    "passkeys",
+    "webauthn",
+    "fido2",
+    "passwordless",
+    "authentication",
+    "auth",
+    "mfa",
+    "2fa",
+    "phishing-resistant",
+    "biometric",
+    "typescript",
+    "edge",
+    "nextjs",
+    "hono",
+    "react",
+    "vue",
+    "sveltekit",
+    "zero-dependencies"
+  ],
+  "peerDependencies": {
+    "@nestjs/common": ">=10",
+    "@nestjs/core": ">=10",
+    "@prisma/client": ">=5",
+    "@sveltejs/kit": ">=2",
+    "@trpc/server": ">=11",
+    "drizzle-orm": ">=0.30",
+    "express": ">=4",
+    "fastify": ">=4",
+    "hono": ">=4",
+    "kysely": ">=0.27",
+    "next": ">=14",
+    "react": ">=18",
+    "vue": ">=3.4"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/common": { "optional": true },
+    "@nestjs/core": { "optional": true },
+    "@prisma/client": { "optional": true },
+    "@sveltejs/kit": { "optional": true },
+    "@trpc/server": { "optional": true },
+    "drizzle-orm": { "optional": true },
+    "express": { "optional": true },
+    "fastify": { "optional": true },
+    "hono": { "optional": true },
+    "kysely": { "optional": true },
+    "next": { "optional": true },
+    "react": { "optional": true },
+    "vue": { "optional": true }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
