@@ -28,6 +28,10 @@
     },
     "./server": {
       "types": "./dist/server/index.d.ts",
+      "workerd": "./dist/server/index.edge.js",
+      "edge-light": "./dist/server/index.edge.js",
+      "deno": "./dist/server/index.edge.js",
+      "browser": "./dist/server/index.edge.js",
       "import": "./dist/server/index.js",
       "require": "./dist/server/index.cjs"
     },
@@ -69,11 +73,16 @@
     },
     "./adapters/next": {
       "types": "./dist/adapters/next/index.d.ts",
+      "workerd": "./dist/adapters/next/index.edge.js",
+      "edge-light": "./dist/adapters/next/index.edge.js",
       "import": "./dist/adapters/next/index.js",
       "require": "./dist/adapters/next/index.cjs"
     },
     "./adapters/hono": {
       "types": "./dist/adapters/hono/index.d.ts",
+      "workerd": "./dist/adapters/hono/index.edge.js",
+      "edge-light": "./dist/adapters/hono/index.edge.js",
+      "deno": "./dist/adapters/hono/index.edge.js",
       "import": "./dist/adapters/hono/index.js",
       "require": "./dist/adapters/hono/index.cjs"
     },

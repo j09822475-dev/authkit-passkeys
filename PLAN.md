@@ -1,9 +1,9 @@
 # `@authkit/passkeys` — Architecture Plan
 
 > Lightweight, framework-agnostic Passkey/WebAuthn library targeting Browser + Node + Edge.
-> Targets <10KB gzipped client core, <15KB server core. WebAuthn Level 3 first, no `cbor`/`asn1js`/`@hexagon/base64`.
+> Headline marketing target: **<10KB gzipped client core**. Server core is a separate concern at **<15KB gzipped** (Worker bundles include `/server`, so the README must spell this out and never quote 10KB as a single overall number). WebAuthn Level 3 first, no `cbor`/`asn1js`/`@hexagon/base64`.
 >
-> Differentiation vs `@simplewebauthn`: opinionated user-flow API (one `register()` / `authenticate()` instead of six functions), zero `node:crypto` (pure WebCrypto), custom 1KB COSE-key parser, framework adapters in the box.
+> Differentiation vs `@simplewebauthn`: opinionated user-flow API (one `startRegistration()` / `startAuthentication()` browser pair, mirroring server method names, instead of six functions), zero `node:crypto` (pure WebCrypto), custom 1KB COSE-key parser, framework adapters in the box, first-class `onFallback` hooks for password/magic-link degradation.
 
 ---
 
@@ -71,22 +71,23 @@ authkit-passkeys/
 │   │   └── version.ts                # __PACKAGE_VERSION__ injected by tsup at build
 │   │
 │   ├── server/                       # Relying-Party (server) API — runs in Node 18+, edge, Deno, Bun
-│   │   ├── index.ts                  # Public exports: RelyingParty, generate*, verify*
-│   │   ├── relying-party.ts          # RelyingParty class — central config + methods
-│   │   ├── options-registration.ts   # generateRegistrationOptions()
-│   │   ├── options-authentication.ts # generateAuthenticationOptions()
-│   │   ├── verify-registration.ts    # verifyRegistrationResponse()
-│   │   ├── verify-authentication.ts  # verifyAuthenticationResponse()
-│   │   ├── challenge.ts              # ChallengeStore interface + InMemoryChallengeStore + helpers
+│   │   ├── index.ts                  # Public exports: RelyingParty (single entry point) + types
+│   │   ├── relying-party.ts          # RelyingParty class — central config + methods + resolveConfig hook
+│   │   ├── options-registration.ts   # _buildRegistrationOptions() — INTERNAL helper used by RelyingParty
+│   │   ├── options-authentication.ts # _buildAuthenticationOptions() — INTERNAL
+│   │   ├── verify-registration.ts    # _verifyRegistration() — INTERNAL
+│   │   ├── verify-authentication.ts  # _verifyAuthentication() — INTERNAL
+│   │   ├── challenge.ts              # ChallengeStore interface + InMemoryChallengeStore + SignedJwtChallengeStore (kid-based key rotation)
 │   │   ├── credential-store.ts       # CredentialStore interface — user-supplied
-│   │   ├── policies.ts               # AuthenticatorPolicy (AAGUID allow/deny, transport, UV required, etc.)
+│   │   ├── policies.ts               # AuthenticatorPolicy + AuthenticatorPolicyOverride (explicit per-field optional)
 │   │   ├── audit.ts                  # AuditHook type + emitAudit() helper
-│   │   └── defaults.ts               # Sensible RP defaults (timeout, AS, attestation:'none', etc.)
+│   │   ├── node-crypto-shim.ts       # Node-only WebCrypto shim — selected ONLY under default Node export condition
+│   │   └── defaults.ts               # Sensible RP defaults (timeout, AS, attestation:'none', UV='required', etc.)
 │   │
 │   ├── browser/                      # Client (user agent) API — runs only in browser
-│   │   ├── index.ts                  # Public exports
-│   │   ├── register.ts               # register(serverOptions, opts?) — full ceremony wrapper
-│   │   ├── authenticate.ts           # authenticate(serverOptions, opts?) — incl. conditional mediation
+│   │   ├── index.ts                  # Public exports: startRegistration, startAuthentication, ...
+│   │   ├── start-registration.ts     # startRegistration(serverOptions, opts?) — full ceremony wrapper
+│   │   ├── start-authentication.ts   # startAuthentication(serverOptions, opts?) — incl. conditional mediation
 │   │   ├── feature-detect.ts         # isPasskeySupported / isConditionalUISupported / isPlatformAuthenticatorAvailable
 │   │   ├── parse-options.ts          # parseCreationOptionsFromJSON / parseRequestOptionsFromJSON
 │   │   │                              # (uses native if present, falls back to manual base64url decode)
@@ -96,10 +97,10 @@ authkit-passkeys/
 │   │
 │   ├── types/                        # All public types live here for explicit import path
 │   │   ├── index.ts                  # Barrel — used by `@authkit/passkeys/types`
-│   │   ├── webauthn-json.ts          # CredentialCreationOptionsJSON, CredentialRequestOptionsJSON, etc.
+│   │   ├── webauthn-json.ts          # JSON shapes + library-owned PasskeyExtensionsInput / Output (no DOM-lib leakage on server boundaries)
 │   │   ├── ceremony.ts               # ParsedAttestation, ParsedAssertion, AuthenticatorData
 │   │   ├── credential.ts             # CredentialRecord, StoredPublicKey, BackupState
-│   │   ├── policy.ts                 # AuthenticatorPolicy, RpConfig
+│   │   ├── policy.ts                 # AuthenticatorPolicy, AuthenticatorPolicyOverride, RpConfig
 │   │   ├── flags.ts                  # AuthenticatorFlags
 │   │   └── transport.ts              # AuthenticatorTransport union
 │   │
@@ -222,13 +223,25 @@ const rp = new RelyingParty({
   challengeStore,                             // see ChallengeStore below
   credentialStore,                            // see CredentialStore below
   policy: {
-    userVerification: 'required',
+    userVerification: 'required',             // DEFAULT (NIST AAL3 / PSD2 SCA-friendly). Opt out to 'preferred' for consumer-grade flows.
     residentKey: 'preferred',
     authenticatorAttachment: undefined,       // any
     aaguidAllowList: undefined,
-    transports: ['internal', 'hybrid', 'usb'],
+    transports: ['internal', 'hybrid', 'usb', 'nfc', 'ble'],
   },
   audit: (event) => logger.info(event),
+});
+
+// Multi-tenant / per-request RP config (replaces the v0.0 standalone-functions form).
+// Anything returned by resolveConfig overrides the constructor defaults for that ceremony.
+const multiTenantRp = new RelyingParty({
+  rpName: 'AcmeCloud',
+  challengeStore,
+  credentialStore,
+  resolveConfig: async (ctx) => {
+    const tenant = await tenants.lookup(ctx.hostname);
+    return { rpId: tenant.rpId, origin: tenant.allowedOrigins };
+  },
 });
 ```
 
@@ -289,36 +302,19 @@ export class RelyingParty {
 }
 ```
 
-#### Standalone function form (no RP class)
+#### Single entry point — no standalone `generate*/verify*` functions
 
-For users who want functional style or have heterogeneous RPs per request:
-
-```ts
-import {
-  generateRegistrationOptions,
-  verifyRegistrationResponse,
-  generateAuthenticationOptions,
-  verifyAuthenticationResponse,
-} from '@authkit/passkeys/server';
-
-const options = await generateRegistrationOptions({
-  rpName, rpId, origin, user, challengeStore, policy,
-});
-
-const result = await verifyRegistrationResponse({
-  response, expectedChallenge, expectedOrigin, expectedRpId, policy,
-});
-```
+`RelyingParty` is the **only** public server entry. The earlier `generateRegistrationOptions` / `verifyRegistrationResponse` / `generateAuthenticationOptions` / `verifyAuthenticationResponse` standalone exports have been **removed** — they tripled the public API surface (three docs pages, three test matrices) for a use case (multi-tenant / per-request config) that the `resolveConfig` callback now covers cleanly. The functions still exist as private `_buildRegistrationOptions` / `_verifyRegistration` helpers inside `server/`, but are not re-exported from `server/index.ts`.
 
 #### `StartRegistrationInput` / `Output`
 
 ```ts
 export interface StartRegistrationInput {
-  user: { id: string | Uint8Array; name: string; displayName: string };
+  user: { id: Uint8Array; name: string; displayName: string };  // Uint8Array per spec; helpers in core/encoding for string round-trips
   excludeCredentials?: Array<{ id: string; transports?: AuthenticatorTransport[] }>;
   attestation?: AttestationConveyancePreference;
-  extensions?: AuthenticationExtensionsClientInputs;
-  policy?: Partial<AuthenticatorPolicy>;       // overrides RP defaults for this ceremony
+  extensions?: PasskeyExtensionsInput;          // library-owned type — never the DOM-lib AuthenticationExtensionsClientInputs
+  policy?: AuthenticatorPolicyOverride;         // explicit per-field optional, NOT structural Partial<>
   timeoutMs?: number;
 }
 
@@ -339,18 +335,26 @@ export interface StartRegistrationOutput {
 export interface FinishRegistrationInput {
   response: PublicKeyCredentialJSON;       // RegistrationResponseJSON shape
   challengeToken: string;
-  expectedUserId: string | Uint8Array;
+  expectedUserId: Uint8Array;              // canonical Uint8Array — no UTF-8 lossy decode at the boundary
   /** Override RP-level policy for this single verification. */
-  policy?: Partial<AuthenticatorPolicy>;
+  policy?: AuthenticatorPolicyOverride;
 }
 
 /** What the caller persists. CredentialStore.save(record) */
 export interface CredentialRecord {
   credentialId: string;                    // base64url
-  userId: string;                          // mirrors RP user.id
+  userId: Uint8Array;                      // canonical bytes per spec; never lossily decoded to UTF-8
   publicKey: Uint8Array;                   // SPKI-encoded; passkey can re-import via WebCrypto
   publicKeyAlgorithm: COSEAlgorithmIdentifier;
   signCount: number;
+  /**
+   * `true` iff this authenticator is known to always return `signCount === 0`
+   * (iCloud Keychain, Google Password Manager, etc.). On registration we set
+   * this to `null` (unknown); `verifyAuthenticationResponse` flips it to `true`
+   * the first time it observes a 0-counter assertion, and to `false` otherwise.
+   * Policy code uses it to skip the "counter must increase" check for known-static authenticators.
+   */
+  signCountStatic: boolean | null;
   transports: AuthenticatorTransport[];
   aaguid: string;                          // hex-formatted UUID
   backupEligible: boolean;
@@ -360,10 +364,12 @@ export interface CredentialRecord {
 }
 ```
 
-### 2.2 Browser — `register` / `authenticate`
+### 2.2 Browser — `startRegistration` / `startAuthentication`
+
+Names mirror the server methods (`RelyingParty.startRegistration` / `.startAuthentication`) so a developer reading both halves of the ceremony reads the same verb. The previous draft used `register` / `authenticate`, which collided with `lit-element`'s `register`, OAuth `authenticate`, and most React component naming — every consumer would have written `import { register as registerPasskey }`.
 
 ```ts
-import { register, authenticate, isPasskeySupported } from '@authkit/passkeys/browser';
+import { startRegistration, startAuthentication, isPasskeySupported } from '@authkit/passkeys/browser';
 
 if (!isPasskeySupported()) {
   // graceful fallback
@@ -374,7 +380,7 @@ const { options, challengeToken } = await fetch('/api/passkey/start-registration
   .then((r) => r.json());
 
 // 2. Run ceremony
-const credential = await register(options, {
+const credential = await startRegistration(options, {
   signal: abortController.signal,
 });
 
@@ -385,7 +391,7 @@ await fetch('/api/passkey/finish-registration', {
 });
 ```
 
-#### `register`
+#### `startRegistration`
 
 ```ts
 /**
@@ -397,19 +403,18 @@ await fetch('/api/passkey/finish-registration', {
  * @param options    Either a JSON shape from server.startRegistration OR a native
  *                   PublicKeyCredentialCreationOptions. Auto-detected.
  * @param opts.signal           AbortSignal for cancellation.
- * @param opts.useAutofill      Currently registration-irrelevant; reserved.
  * @returns          RegistrationResponseJSON ready to POST back to server.
  * @throws PasskeyClientError   With one of: 'not-supported', 'user-cancelled',
  *                              'invalid-state' (already registered), 'security-error',
  *                              'timeout', 'unknown'.
  */
-export function register(
+export function startRegistration(
   options: PublicKeyCredentialCreationOptionsJSON | PublicKeyCredentialCreationOptions,
   opts?: { signal?: AbortSignal },
 ): Promise<RegistrationResponseJSON>;
 ```
 
-#### `authenticate`
+#### `startAuthentication`
 
 ```ts
 /**
@@ -423,7 +428,7 @@ export function register(
  * @param opts.signal        AbortSignal — required when useAutofill is true.
  * @returns      AuthenticationResponseJSON
  */
-export function authenticate(
+export function startAuthentication(
   options: PublicKeyCredentialRequestOptionsJSON | PublicKeyCredentialRequestOptions,
   opts?: { signal?: AbortSignal; useAutofill?: boolean },
 ): Promise<AuthenticationResponseJSON>;
@@ -456,6 +461,10 @@ function LoginScreen() {
     finishUrl: '/api/passkey/finish-authentication',
     onSuccess: (session) => router.push('/dashboard'),
     onError: (err) => toast.error(err.message),
+    // First-class fallback hook (mirrors the differentiator from the research report).
+    // Fires on any code in FALLBACK_REASONS: 'not-supported', 'user-cancelled',
+    // 'no-credentials', 'authentication-failed', 'timeout'.
+    onFallback: (reason) => switchToPasswordLogin(reason),
   });
 
   return (
@@ -475,10 +484,12 @@ function LoginScreen() {
 /**
  * Hook that drives a passkey ceremony state machine.
  *
- * State: 'idle' | 'starting' | 'awaiting-user' | 'verifying' | 'success' | 'error'
+ * State: 'idle' | 'starting' | 'awaiting-user' | 'verifying' | 'success' | 'error' | 'fallback'
  *
  * - Uses startUrl/finishUrl convention by default; override fetcher for custom transport.
  * - Auto-cancels in-flight conditional-UI request on unmount.
+ * - When the ceremony fails with a known fallback reason, transitions to 'fallback' and
+ *   invokes onFallback(reason) so callers can switch UI to password / magic-link.
  */
 export function usePasskey<TSuccess = unknown>(opts: UsePasskeyOptions<TSuccess>): {
   state: PasskeyState;
@@ -487,7 +498,31 @@ export function usePasskey<TSuccess = unknown>(opts: UsePasskeyOptions<TSuccess>
   authenticate: (opts?: { useAutofill?: boolean }) => Promise<TSuccess>;
   reset: () => void;
 };
+
+export interface UsePasskeyOptions<TSuccess> {
+  startUrl: string;
+  finishUrl: string;
+  onSuccess?: (value: TSuccess) => void;
+  onError?: (err: PasskeyError) => void;
+  /** Fired when the ceremony fails in a way the caller should degrade gracefully. */
+  onFallback?: (reason: PasskeyErrorCode) => void;
+  fetcher?: typeof fetch;
+}
 ```
+
+#### Non-React adapters: same `onFallback` contract
+
+Hono / Next / Express adapters expose the equivalent hook on their handler config:
+
+```ts
+passkeyApp({
+  rp,
+  onAuthenticated: async (c, cred) => { /* ... */ },
+  onFallback: (c, reason) => c.json({ fallback: 'password', reason }, 200),
+});
+```
+
+The handler invokes `onFallback` for the same set of reason codes; if not provided it returns the default `{ ok: false, error }` body unchanged.
 
 ### 2.4 Hono adapter
 
@@ -547,29 +582,50 @@ export interface ChallengeStore {
 }
 ```
 
-Default implementations: `InMemoryChallengeStore` (testing), `SignedJwtChallengeStore` (stateless — HS256 over a server secret, no DB round-trip).
+Default implementations: `InMemoryChallengeStore` (testing), `SignedJwtChallengeStore` (stateless — HS256, no DB round-trip).
+
+`SignedJwtChallengeStore` ships with **first-class key rotation** so fintech consumers can rotate the signing secret without orphaning in-flight registrations:
+
+```ts
+new SignedJwtChallengeStore({
+  // Verify against ANY key whose kid appears in the JWT header.
+  // Sign new tokens with the FIRST entry (= "active" key).
+  // To rotate: prepend the new key, leave the old one until ttlMs > maxChallengeTtl.
+  keys: [
+    { kid: 'k-2026-04', secret: process.env.PASSKEY_CHALLENGE_SECRET_NEW! },
+    { kid: 'k-2026-01', secret: process.env.PASSKEY_CHALLENGE_SECRET_OLD! },
+  ],
+  ttlMs: 5 * 60_000,
+});
+```
+
+Tokens are emitted with a `kid` JOSE header; verify-time we look up by `kid` and reject with `bad-challenge` if no key matches. A single-key constructor form (`{ secret, kid? }`) remains for the simple case but is internally normalized to a one-element `keys` array.
 
 ### 2.7 Errors as values
 
 Every public method that performs verification returns `Result<T, PasskeyError>` instead of throwing. Programmer errors (missing config, wrong types) throw `PasskeyInternalError` synchronously.
 
+**Public-boundary collapsing for security-sensitive codes.** To prevent credential-id enumeration via timing/error-shape oracles (see §9.10), `finishAuthentication` collapses `unknown-credential` and `bad-signature` into a single public-facing code `'authentication-failed'`. The granular reason is available on `error.details.reason` for **server-internal logging only** — never echo `details` to the client. Callers MUST NOT branch UX on `details.reason`.
+
 ```ts
 const result = await rp.finishAuthentication(input);
 if (!result.ok) {
   switch (result.error.code) {
-    case 'bad-challenge':       // challenge expired or never issued
+    case 'bad-challenge':                  // challenge expired or never issued
     case 'bad-origin':
     case 'bad-rp-id':
-    case 'bad-signature':
-    case 'replay-detected':     // sign-counter went backwards
-    case 'unknown-credential':
+    case 'authentication-failed':          // collapses unknown-credential + bad-signature
+    case 'replay-detected':                // sign-counter regressed on a non-static authenticator
     case 'aaguid-not-allowed':
     case 'user-verification-required':
-      return reject(result.error);
+      auditLog.warn(result.error.code, result.error.details); // details.reason is server-only
+      return reject({ code: result.error.code });             // never forward .details to client
   }
 }
 return accept(result.value);
 ```
+
+Registration uses the same pattern (`registration-failed` collapses parse/signature/attestation failures at the public boundary; granular reason in `details`).
 
 ---
 
@@ -599,7 +655,8 @@ return accept(result.value);
 
 Hard rules enforced via ESLint `no-restricted-imports`:
 
-- `core/*` MUST NOT import from `server/`, `browser/`, `adapters/`, `storage/`, `mds/`.
+- `errors/` is the **only** module every layer is allowed to depend on (it sits below `core/` in the diagram). The ESLint rule lists `errors/` as an explicit allow-list exception — do not infer it implicitly.
+- `core/*` MUST NOT import from `server/`, `browser/`, `adapters/`, `storage/`, `mds/`. (May import from `errors/` and `types/`.)
 - `server/*` MUST NOT import from `browser/`.
 - `browser/*` MUST NOT import from `server/`.
 - `adapters/<framework>/*` may import `server/` OR `browser/` but not both within one adapter.
@@ -662,9 +719,9 @@ authenticate(options)
 ### 3.4 Key design patterns
 
 - **Result type for verification** — verification returns `Result<T, E>`, exposing structured error codes without try/catch noise. Programmer errors still throw.
-- **Pluggable stores** — `ChallengeStore` and `CredentialStore` are injected. Default in-memory + signed-JWT shipped.
+- **Pluggable stores** — `ChallengeStore` and `CredentialStore` are injected. Default in-memory + signed-JWT (with kid-based key rotation) shipped.
 - **Strategy pattern for attestation formats** — `attestation-formats/` exports a registry; `RelyingParty` accepts a custom registry to add/replace verifiers. Unused formats tree-shake out.
-- **Dual API: class + standalone fns** — `RelyingParty` for typical app code, standalone fns for multi-tenant / per-request RP scenarios.
+- **Single public entry point per layer** — `RelyingParty` is the one server entry; multi-tenant / per-request config flows through its `resolveConfig` callback. No standalone `generate*/verify*` exports — adapters build on `RelyingParty` only.
 - **Adapter pattern** — framework adapters wrap the core lib without coupling it to any framework.
 - **Tagged unions everywhere** — `Result`, error codes, ceremony states are all discriminated unions to maximize TS narrowing.
 
@@ -676,24 +733,40 @@ authenticate(options)
 
 ```ts
 // errors/codes.ts
+//
+// Public surface — consumers may switch on these. Adding new codes is a minor
+// version bump (see §5.3). `'authentication-failed'` and `'registration-failed'`
+// are aggregate codes that intentionally hide enumeration-leaking details — see §9.10.
 export type PasskeyErrorCode =
   | 'not-supported'
   | 'user-cancelled'
   | 'invalid-state'
   | 'security-error'
   | 'timeout'
+  | 'no-credentials'
   | 'bad-challenge'
   | 'bad-origin'
   | 'bad-rp-id'
-  | 'bad-signature'
+  | 'authentication-failed'      // collapses internal 'unknown-credential' + 'bad-signature'
+  | 'registration-failed'        // collapses internal parse / signature / attestation failures
   | 'replay-detected'
-  | 'unknown-credential'
   | 'aaguid-not-allowed'
   | 'user-verification-required'
   | 'transport-not-allowed'
   | 'unsupported-attestation-format'
   | 'malformed-response'
   | 'unknown';
+
+/**
+ * Internal-only reason strings carried on `error.details.reason` for server
+ * audit logs. NEVER returned as the top-level `error.code`. Treat these as
+ * unstable — they may change between minor versions.
+ */
+export type PasskeyInternalReason =
+  | 'unknown-credential'
+  | 'bad-signature'
+  | 'cose-key-parse-failed'
+  | 'attestation-statement-invalid';
 
 // errors/base.ts
 export class PasskeyError extends Error {
@@ -780,6 +853,19 @@ type AuthSuccess = Verified<RelyingParty['finishAuthentication']>;
   export type ChallengeToken = string & { readonly __brand: 'ChallengeToken' };
   export type CredentialId = string & { readonly __brand: 'CredentialId' };
   ```
+- **Explicit per-field optional types for overrides.** `AuthenticatorPolicyOverride` is hand-written rather than `Partial<AuthenticatorPolicy>` so a typo (`userVerifaction: 'required'`) is rejected at compile time instead of silently widened by `Partial<>`'s structural rules under `exactOptionalPropertyTypes`:
+  ```ts
+  export interface AuthenticatorPolicyOverride {
+    userVerification?: UserVerificationRequirement;
+    residentKey?: ResidentKeyRequirement;
+    authenticatorAttachment?: AuthenticatorAttachment;
+    aaguidAllowList?: readonly string[];
+    aaguidDenyList?: readonly string[];
+    transports?: readonly AuthenticatorTransport[];
+    // … explicit per field, no index signature, no spread-friendly Partial
+  }
+  ```
+  At the API boundary `RelyingParty` ALSO calls `assertKnownPolicyKeys(input.policy)` at runtime as a defense-in-depth check for callers using the JS API without TS strict mode.
 
 ---
 
@@ -839,11 +925,14 @@ Native `DOMException`s from `navigator.credentials.*` map to library codes:
 
 ### 6.1 Entry points (subpath exports)
 
+> **Bundle-size headline: 10 KB is the CLIENT (`/browser`) target, not an overall number.**
+> The research report's `target_bundle_size_kb: 10` reads as a single figure, but the server module legitimately needs ~10–14 KB (CBOR/COSE parsing, attestation verifier registry, JOSE for `SignedJwtChallengeStore`). A Worker bundle that imports `/server` will land at ~10 KB client + ~10–14 KB server. The README banner spells this out as `<10KB browser core, <15KB server core` — never as a single number — so the marketing claim is verifiable when someone runs `size-limit` on a Cloudflare Worker that uses the server module.
+
 | Subpath                              | Purpose                  | Approx gzipped |
 | ------------------------------------ | ------------------------ | -------------- |
 | `@authkit/passkeys`                  | Types + version          | <0.5 KB        |
-| `@authkit/passkeys/server`           | RP, verify, options      | ~10–14 KB      |
-| `@authkit/passkeys/browser`          | register, authenticate   | ~3–5 KB        |
+| `@authkit/passkeys/server`           | RP, verify, options      | ~10–14 KB (server budget) |
+| `@authkit/passkeys/browser`          | startRegistration, startAuthentication | ~3–5 KB (counts toward 10KB client headline) |
 | `@authkit/passkeys/types`            | Pure type re-exports     | 0 KB           |
 | `@authkit/passkeys/errors`           | Error classes            | <1 KB          |
 | `@authkit/passkeys/react`            | Hook + components        | ~2–3 KB        |
@@ -882,11 +971,21 @@ Native `DOMException`s from `navigator.credentials.*` map to library codes:
 ```jsonc
 "exports": {
   ".":          { "types": "./dist/index.d.ts",          "import": "./dist/index.js",          "require": "./dist/index.cjs" },
-  "./server":   { "types": "./dist/server/index.d.ts",   "import": "./dist/server/index.js",   "require": "./dist/server/index.cjs" },
+  "./server":   {
+    "types":       "./dist/server/index.d.ts",
+    "workerd":     "./dist/server/index.edge.js",        // Cloudflare Workers — never reaches node-crypto-shim
+    "edge-light":  "./dist/server/index.edge.js",        // Vercel Edge Runtime — same
+    "deno":        "./dist/server/index.edge.js",
+    "browser":     "./dist/server/index.edge.js",
+    "import":      "./dist/server/index.js",             // Node — bundles node-crypto-shim.ts
+    "require":     "./dist/server/index.cjs"
+  },
   "./browser":  { "types": "./dist/browser/index.d.ts",  "browser": "./dist/browser/index.js", "import": "./dist/browser/index.js" }
   // … one per subpath
 }
 ```
+
+`server/node-crypto-shim.ts` does the only `import { webcrypto } from 'node:crypto'` in the codebase. It is the entry-point of `index.js` (Node default), and explicitly absent from `index.edge.js` — a static `import`, not a runtime `typeof process !== 'undefined'` guard, so esbuild/webpack/Wrangler/Workers all tree-shake the `node:crypto` reference cleanly. The order of conditions matters: `workerd` / `edge-light` MUST come before `import` so the Workers bundler picks the edge entry first.
 
 The `"browser"` condition for `./browser` ensures bundlers without `node:` resolution prefer the browser build (identical to ESM but excluded from the CJS bundle to keep clients pure-ESM).
 
@@ -1061,7 +1160,7 @@ export default defineConfig({
 ### 9.3 Sign-counter / replay
 
 - Counter is `0` on the first authentication for many platform authenticators (iCloud/Google PM) — treat `0` specially: don't reject, but also don't increment as proof of non-replay.
-- Authenticators that always return `0` should be flagged in CredentialRecord (`signCountStatic = true`) so policy can decide.
+- Authenticators that always return `0` are flagged in CredentialRecord (`signCountStatic`). The field starts as `null` (unknown) at registration time — the registration ceremony cannot distinguish "static" from "first-counter-happens-to-be-zero". `verifyAuthenticationResponse` flips it to `true` the first time it observes a 0-counter assertion (and to `false` the first time it sees a non-zero one); the caller persists the new value via `CredentialStore.update(...)` alongside `signCount`. Once `signCountStatic === true`, the "counter must increase" check is skipped for that credential.
 - Sign counter MUST be compared as unsigned 32-bit integer.
 
 ### 9.4 Backup state
@@ -1071,7 +1170,7 @@ export default defineConfig({
 
 ### 9.5 User handle
 
-- `user.id` MAY be up to 64 bytes of opaque binary. We accept both string (UTF-8 decoded) and Uint8Array; round-trip preserves bytes.
+- `user.id` MAY be up to 64 bytes of opaque binary. The public boundary accepts `Uint8Array` only (the previous `string | Uint8Array` form was lossy on non-UTF-8 binary IDs — see §4.1). For the common case of "I want to use my UUID-string user-id directly" the caller writes `new TextEncoder().encode(uuid)`; helpers in `core/encoding` (`utf8.encode`, `base64url.toBytes`) make this idiomatic. `CredentialRecord.userId` is also `Uint8Array`, so round-trip is byte-exact and free of UTF-8 decode bugs.
 - Authentication response's `userHandle` MAY be null on non-discoverable flows — treat as a hint, not authoritative.
 
 ### 9.6 Discoverable credentials / passwordless
@@ -1095,14 +1194,14 @@ export default defineConfig({
 ### 9.9 Cross-runtime
 
 - Cloudflare Workers exposes `crypto.subtle` but not `Buffer`. All encoding must be Uint8Array-based.
-- Node 18 didn't expose `globalThis.crypto` everywhere — we polyfill via `import { webcrypto }` only inside Node-conditional code paths.
+- Node 18 didn't expose `globalThis.crypto` everywhere — `server/node-crypto-shim.ts` does the only `import { webcrypto } from 'node:crypto'` in the codebase. It is reachable ONLY through the `import` (Node) export condition; `workerd` / `edge-light` / `deno` / `browser` conditions resolve to a separate `index.edge.js` entry that has no path to the shim. This is a static-import boundary — not a runtime `typeof process !== 'undefined'` guard, which esbuild would still bundle and Workers would still reject. See §6.4 for the exports map.
 - Edge runtime forbids dynamic `eval`/`Function`; we never use them.
 
 ### 9.10 Timing & abuse
 
 - Challenge tokens are single-use and short-TTL (default 5 min). Replay of challengeToken MUST fail.
 - All `verifySignature` paths MUST pass through WebCrypto's constant-time-ish primitives; never compare buffers with `==`.
-- Public `findById` lookup must not leak credentialId enumeration via timing — error path for `unknown-credential` should be the same shape as `bad-signature`.
+- Public `findById` lookup must not leak credentialId enumeration via timing or error shape. Concretely: when the credentialId is unknown, we still perform a dummy `crypto.subtle.verify` against a placeholder key (matching the shape of a real verify call) before returning. The returned `error.code` is the aggregate `'authentication-failed'` (§4.1), with `details.reason: 'unknown-credential' | 'bad-signature'` available **only** to server-side audit logs. Callers MUST NOT branch UX on `details.reason` — the §2.7 example shows the correct pattern.
 
 ### 9.11 Storage
 
@@ -1125,9 +1224,11 @@ export default defineConfig({
 
 - Every public method has a documented threat model in JSDoc.
 - We never log raw `clientDataJSON` or signatures (only digests + length + alg).
-- `RelyingParty` defaults to `userVerification: 'preferred'` (UX) but `userVerification: 'required'` is one-line opt-in and recommended in docs for sensitive flows.
+- `RelyingParty` defaults to `userVerification: 'required'`. Rationale: the research report's primary personas are fintech / healthcare with NIST AAL3 and PSD2 SCA compliance requirements, where a default that silently drops UV would be a silent compliance bug. Consumer-grade flows opt down to `'preferred'` with one line.
 - `attestation: 'none'` is default — `direct`/`enterprise` requires explicit opt-in and an MDS3 client to be useful.
 - All challenge bytes come from `crypto.getRandomValues`; never `Math.random`.
+- `SignedJwtChallengeStore` supports kid-based key rotation out of the box (§2.6) so secret rotation never orphans in-flight registrations.
+- `finishAuthentication` collapses `unknown-credential` and `bad-signature` into a single public `'authentication-failed'` code so an attacker cannot enumerate credentialIds via error-shape or response-time difference (see §9.10). Internal granularity stays in `error.details.reason` for server logs only.
 - Documentation includes a "RP-ID confusion in multi-tenant deployments" appendix — the most common security mistake.
 
 ---
@@ -1136,6 +1237,10 @@ export default defineConfig({
 
 - v0.x — semver-minor for breaking changes, semver-patch for fixes.
 - v1.0 commits the public API surface enumerated in §2 + the error-code list in §5.3.
+- **v1.0 stability commitments** (changing any of these is a major version bump):
+  - Default `userVerification: 'required'`. Flipping the default is a breaking change for the AAL3/SCA audience.
+  - `RelyingParty` is the only public server entry. Re-introducing standalone `generate*/verify*` functions would re-fragment the surface.
+  - `'authentication-failed'` and `'registration-failed'` are aggregate codes; their `details.reason` strings are explicitly NOT part of the public contract and may change between minor versions.
 - Browser feature support tracks WebAuthn Level 2 Recommendation as the floor; Level 3 features marked experimental in JSDoc until ratified.
 
 ---
@@ -1148,3 +1253,83 @@ export default defineConfig({
 - FIDO U2F legacy flows.
 - Hosted SaaS / cloud credential storage.
 - Full TPM and Android-Key attestation verification (stubs return `unsupported-attestation-format`; documented roadmap for v0.3).
+
+---
+
+## Review Changes
+
+Responses to Vasyl Bruhanda's PR #1 review (REQUEST_CHANGES verdict). Each row lists the original concern, my response, and which sections of PLAN.md / package.json were touched.
+
+### BLOCKER #1 — Inconsistent `userVerification` default (§10 vs §2.1 example)
+- **Concern:** §10 said default `'preferred'`, but the §2.1 worked example used `'required'`. For fintech / healthcare audiences (NIST AAL3, PSD2 SCA) a default that drops UV is a silent compliance bug.
+- **Response (AGREE):** Aligned both to `'required'` as the default. Documented `'preferred'` as the consumer-grade opt-down.
+- **Sections changed:** §2.1 (config example comment), §10 (security posture rationale), §11 (added v1.0 stability commitment that flipping the default is a major bump).
+
+### BLOCKER #2 — Timing/error-shape leak (§9.10 vs §4.1 vs §2.7)
+- **Concern:** §9.10 mandated indistinguishable error paths for `unknown-credential` and `bad-signature`, but §4.1 listed them as distinct public codes and §2.7 actively encouraged switching on them.
+- **Response (AGREE):** Collapsed both into a single public-boundary code `'authentication-failed'` (and `'registration-failed'` for the registration-side equivalent). The granular reason now lives ONLY on `error.details.reason`, documented as server-internal and explicitly NOT part of the public contract. Added a constant-time-shape dummy verify on the unknown-credential path so response time matches.
+- **Sections changed:** §2.7 (rewritten example with explicit "never forward .details to client"), §4.1 (added new aggregate codes; introduced `PasskeyInternalReason` type for server-only audit strings), §9.10 (rewrote to describe the dummy-verify pattern and reference §2.7), §10 (added explicit security-posture bullet), §11 (added v1.0 stability commitment that `details.reason` is unstable).
+
+### HIGH #3 — DOM-typed `extensions?: AuthenticationExtensionsClientInputs` on server boundary
+- **Concern:** `AuthenticationExtensionsClientInputs` is a `lib.dom.d.ts` type; leaking it into a server-only public API contradicts the §9.9 "no DOM-in-Node footgun" promise.
+- **Response (AGREE):** Replaced with a library-owned `PasskeyExtensionsInput` defined in `types/webauthn-json.ts`. Marked the same audit for `clientExtensionResults` in §1's file-tree comment.
+- **Sections changed:** §1 (`types/webauthn-json.ts` comment expanded), §2.1 (`StartRegistrationInput.extensions` type swapped).
+
+### HIGH #4 — Public-API surface too wide (RP class + standalone fns + adapters = 3 entry points)
+- **Concern:** Three ways to do registration triples the docs/test/bug surface for a multi-tenant use case the standalone form was justifying.
+- **Response (AGREE):** Removed the standalone `generateRegistrationOptions` / `verifyRegistrationResponse` / `generateAuthenticationOptions` / `verifyAuthenticationResponse` exports. Multi-tenant / per-request config now flows through a new `resolveConfig: (ctx) => Promise<Partial<RpConfig>>` callback on `RelyingParty`. The internal helper files still exist (renamed to `_buildRegistrationOptions` etc.) but are no longer re-exported from `server/index.ts`.
+- **Sections changed:** §1 (file-tree comments mark `options-*.ts` / `verify-*.ts` as INTERNAL), §2.1 (added multi-tenant `resolveConfig` example, replaced "Standalone function form" subsection with an explicit "single entry point" note), §3.4 (replaced "Dual API" pattern with "Single public entry point per layer"), §11 (v1.0 commitment).
+
+### HIGH #5 — `signCountStatic` referenced in §9.3 but missing from `CredentialRecord`
+- **Concern:** §9.3 said the field should exist; §2.1 didn't have it.
+- **Response (AGREE):** Added `signCountStatic: boolean | null` to `CredentialRecord`. Documented that it starts `null` (registration can't tell), and that `verifyAuthenticationResponse` flips it on the first authentication. Caller persists via `CredentialStore.update(...)` alongside `signCount`.
+- **Sections changed:** §2.1 (CredentialRecord shape + JSDoc), §9.3 (extended explanation of the lifecycle).
+
+### HIGH #6 — Missing first-class `onFallback` (research-report differentiator)
+- **Concern:** Fallback strategies surfaced only as a JSX `fallback` prop; no callable hook on `usePasskey`, none on the non-React adapters.
+- **Response (AGREE):** Added `onFallback?: (reason: PasskeyErrorCode) => void` to `UsePasskeyOptions`. Added a 'fallback' state. Documented the same callback shape on Hono/Next/Express adapter handler config so the contract is uniform across frameworks.
+- **Sections changed:** §2.3 (login example, hook signature, `UsePasskeyOptions`, new "Non-React adapters" subsection).
+
+### MEDIUM #7 — Bundle-size headline ambiguity (10KB total vs 10KB client)
+- **Concern:** README banner suggested a single 10KB number while §6.1 budgets server at 10–14KB; a Worker bundle that imports `/server` will visibly exceed 10KB.
+- **Response (AGREE):** Top-of-document banner now reads "<10KB browser core, <15KB server core" and never as a single number. §6.1 leads with an explicit "10 KB is the CLIENT target, not an overall number" callout that pre-empts the marketing-claim challenge.
+- **Sections changed:** Top banner, §6.1 (new explanatory paragraph + table cell labels).
+
+### MEDIUM #8 — Browser exports `register` / `authenticate` clash with common names
+- **Concern:** Generic names collide with React conventions, lit-element, OAuth, and IDE auto-import.
+- **Response (AGREE):** Renamed to `startRegistration` / `startAuthentication`. Bonus benefit: now mirrors the server `RelyingParty.startRegistration` / `.startAuthentication` method names so a developer reading both halves of the ceremony reads the same verb.
+- **Sections changed:** §1 (`browser/start-registration.ts` / `start-authentication.ts` filenames updated), top banner (mention of new names), §2.2 (heading, example, JSDoc, function signatures all renamed; added rationale paragraph).
+
+### MEDIUM #9 — `SignedJwtChallengeStore` lacks key-rotation contract
+- **Concern:** No `kid` header / multi-key support; rotating the secret orphans every in-flight registration.
+- **Response (AGREE):** Constructor now takes `keys: Array<{kid, secret}>` with verify-any / sign-newest semantics. Single-key form retained as a normalize-to-array convenience.
+- **Sections changed:** §1 (`server/challenge.ts` comment), §2.6 (full rotation example + `kid`-header description), §3.4 (mention rotation in the "Pluggable stores" bullet), §10 (security-posture bullet).
+
+### MEDIUM #10 — Edge-runtime `node:crypto` resolution path unspecified
+- **Concern:** The plan said we'd polyfill `import { webcrypto }` "only inside Node-conditional code paths" but didn't say HOW; runtime guards still get bundled.
+- **Response (AGREE):** Added explicit `workerd` / `edge-light` / `deno` / `browser` conditions to the `./server` (and edge-deployed adapter) exports map, resolving to a separate `index.edge.js` entry that has no static path to the new `server/node-crypto-shim.ts`. The shim is the single point that does the Node-only import. Documented that this is a static-import boundary, not a runtime guard.
+- **Sections changed:** §1 (added `server/node-crypto-shim.ts`), §6.4 (rewritten exports-map example with explicit condition order + rationale), §9.9 (replaced the vague "we polyfill" line with a concrete description), `package.json` (`./server`, `./adapters/next`, `./adapters/hono` exports map).
+
+### MEDIUM #11 — `Partial<AuthenticatorPolicy>` accepts unknown keys
+- **Concern:** Under `exactOptionalPropertyTypes`, a typo'd field on a `Partial<>` becomes a silent no-op.
+- **Response (AGREE):** Defined an explicit `AuthenticatorPolicyOverride` interface (per-field optional, no index signature) and used it on both `StartRegistrationInput.policy` and `FinishRegistrationInput.policy`. Added a runtime `assertKnownPolicyKeys` boundary check for plain-JS callers without TS strict mode.
+- **Sections changed:** §1 (`types/policy.ts` and `server/policies.ts` comments), §2.1 (input types), §4.5 (added new bullet with the explicit interface).
+
+### LOW #12 — `expectedUserId: string | Uint8Array` causes lossy UTF-8 decode bug
+- **Concern:** Accepting both at the boundary forces a round-trip that loses bytes for non-UTF-8 binary user IDs; `CredentialRecord.userId: string` is a bug surface.
+- **Response (AGREE):** Tightened the boundary to `Uint8Array` only. `CredentialRecord.userId` is now `Uint8Array` too. Callers with UUID strings write `new TextEncoder().encode(uuid)`; helpers in `core/encoding` make this idiomatic. Documented the rationale in §9.5.
+- **Sections changed:** §2.1 (`StartRegistrationInput.user.id` type, `FinishRegistrationInput.expectedUserId`, `CredentialRecord.userId`), §9.5 (rewrote the "User handle" item to explain the boundary).
+
+### LOW #13 — `errors/` import-rule exception not spelled out
+- **Concern:** `errors/` is shown imported by every layer in the diagram, but the ESLint `no-restricted-imports` rule didn't list it as an exception.
+- **Response (AGREE):** Added an explicit "errors/ is the only module every layer is allowed to depend on" line at the top of the §3.1 hard-rules list, plus an inline note on the `core/*` rule.
+- **Sections changed:** §3.1 (rules block).
+
+### NIT #14 — Default transports list is missing `'nfc'` and `'ble'`
+- **Concern:** Hybrid/QR cross-device flow is a key UX in the report.
+- **Response (AGREE):** Default transports list now includes all five spec values: `['internal', 'hybrid', 'usb', 'nfc', 'ble']`.
+- **Sections changed:** §2.1 (RelyingParty config example).
+
+### Files modified
+- `PLAN.md` — sections §1, §2.1, §2.2, §2.3, §2.6, §2.7, §3.1, §3.4, §4.1, §4.5, §6.1, §6.4, §9.3, §9.5, §9.9, §9.10, §10, §11, top banner, this new "Review Changes" section.
+- `package.json` — `exports["./server"]`, `exports["./adapters/next"]`, `exports["./adapters/hono"]` extended with `workerd` / `edge-light` / `deno` / `browser` conditions resolving to `*.edge.js` entries.
