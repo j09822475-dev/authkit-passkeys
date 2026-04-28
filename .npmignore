@@ -1,0 +1,118 @@
+# `package.json#files` is the authoritative include-list ("dist", "README.md",
+# "LICENSE", "CHANGELOG.md"). This file is defence-in-depth — anything that
+# slips past the include-list is still excluded here.
+
+# Source — only the built artefacts in dist/ ship.
+src/
+tests/
+__tests__/
+**/__tests__/
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+
+# Examples / sandbox / docs sources (the published README is the only doc).
+examples/
+sandbox/
+docs/
+.changeset/
+
+# Plans, reviews, internal notes.
+PLAN.md
+REVIEW.md
+ROADMAP.md
+NOTES.md
+TODO.md
+
+# Build / tool configs.
+tsconfig*.json
+tsup.config.ts
+tsup.config.js
+vitest.config.ts
+vitest.config.js
+vitest.workspace.ts
+size-limit.config.cjs
+size-limit.config.js
+eslint.config.js
+.eslintrc*
+.prettierrc*
+.editorconfig
+.prettierignore
+.eslintignore
+.changeset/
+
+# Test output / coverage / caches.
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+playwright/.cache/
+*.lcov
+junit.xml
+.tsbuildinfo
+*.tsbuildinfo
+.turbo/
+.tsup/
+.rollup.cache/
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+.prettiercache
+
+# VCS / CI / GitHub metadata.
+.git/
+.gitignore
+.gitattributes
+.github/
+.gitlab/
+.circleci/
+.husky/
+
+# Editor / IDE.
+.vscode/
+.idea/
+.fleet/
+.zed/
+*.iml
+*.code-workspace
+
+# OS metadata.
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Environment / secrets — never publish.
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Logs / temp.
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Lockfile noise from non-publishing package managers.
+.npm/
+.yarn/
+.yarn-integrity
+.pnp
+.pnp.js
+.pnp.cjs

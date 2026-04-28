@@ -1,0 +1,93 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.pnp.cjs
+.yarn/cache
+.yarn/install-state.gz
+jspm_packages/
+
+# Build output
+dist/
+build/
+out/
+lib/
+es/
+.turbo/
+.tsup/
+.rollup.cache/
+*.tsbuildinfo
+.next/
+.nuxt/
+.svelte-kit/
+.vercel/
+
+# Test output
+coverage/
+.nyc_output/
+*.lcov
+junit.xml
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Editor and IDE
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+.idea/
+*.iml
+*.ipr
+*.iws
+.fleet/
+.zed/
+*.code-workspace
+
+# OS metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Local caches
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+.prettiercache
+
+# Temporary
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Changesets local
+.changeset/.cache/
+
+# Optional npm/pnpm/yarn lockfile noise (keep root lockfile, ignore generated)
+.npm/
+.yarn-integrity
