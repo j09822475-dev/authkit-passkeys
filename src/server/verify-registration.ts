@@ -6,6 +6,7 @@ import { fromBase64Url, toBase64Url } from '../core/encoding/base64url.js';
 import { aaguidToUuid } from '../core/encoding/hex.js';
 import { encodeUtf8 } from '../core/encoding/utf8.js';
 import { sha256 } from '../core/crypto/digest.js';
+import { equalBytes } from '../core/crypto/bytes.js';
 import {
   assertExpectedClientData,
   assertOriginMatchesRpId,
@@ -13,14 +14,12 @@ import {
   parseClientDataJSON,
 } from '../core/ceremony/index.js';
 import { parseCoseKey } from '../core/cose/key.js';
-import { verifyChallenge } from './challenge.js';
+import { verifyChallengeToken } from './challenge.js';
 import { verifyAttestation, type AttestationVerifier } from './attestation/index.js';
 import { assertAaguidAllowed } from './policy/aaguid.js';
 import { assertUserVerification } from './policy/user-verification.js';
 import type {
-  AaguidString,
   AuthenticatorTransport,
-  Base64Url,
   ChallengeToken,
   RegistrationResponseJSON,
 } from '../types/webauthn.js';
@@ -86,7 +85,7 @@ export async function verifyRegistration(
 ): Promise<NewCredentialRecord> {
   const requireUv = input.requireUserVerification ?? true;
 
-  const { challenge: expectedChallenge, userId: envelopeUserId } = await verifyChallenge(
+  const { challenge: expectedChallenge, userId: envelopeUserId } = await verifyChallengeToken(
     input.challengeToken,
     input.signingKeys,
     'reg',
@@ -142,14 +141,15 @@ export async function verifyRegistration(
   const aaguid = aaguidToUuid(attestation.authData.attestedCredentialData.aaguid);
   assertAaguidAllowed(input.policy, aaguid);
 
-  // Parse the credential public key once to surface alg / kty errors at registration
-  // time; the raw COSE bytes are persisted opaquely on `publicKey` so the SQL
-  // column stays opaque (PLAN §2.3).
-  parseCoseKey(attestation.authData.attestedCredentialData.credentialPublicKey);
+  // Validate the credential public key once so alg / kty errors surface at
+  // registration time; the raw COSE bytes are persisted opaquely on
+  // `publicKey` so the SQL column stays opaque (PLAN §2.3).
+  validateCredentialKey(attestation.authData.attestedCredentialData.credentialPublicKey);
   const credentialPublicKeyCose = attestation.authData.attestedCredentialData.credentialPublicKey;
 
   const credentialId = toBase64Url(attestation.authData.attestedCredentialData.credentialId);
   const transports = (input.response.response.transports ?? []) as ReadonlyArray<AuthenticatorTransport>;
+  const flags = attestation.authData.flags;
 
   const record: NewCredentialRecord = {
     credentialId,
@@ -157,46 +157,32 @@ export async function verifyRegistration(
     aaguid,
     counter: attestation.authData.signCount,
     transports,
-    backupEligible: attestation.authData.flags.be,
-    backupState: attestation.authData.flags.bs,
-    deviceType: attestation.authData.flags.be ? 'multiDevice' : 'singleDevice',
+    backupEligible: flags.be,
+    backupState: flags.bs,
+    deviceType: flags.be ? 'multiDevice' : 'singleDevice',
     ...(envelopeUserId ? { userId: bytesToString(envelopeUserId) } : {}),
   };
 
   if (input.onVerified) {
-    await input.onVerified(buildVerifiedEvent(record, attestation.fmt, credentialId, aaguid, transports, attestation.authData.flags));
+    await input.onVerified({
+      credentialId: record.credentialId,
+      aaguid: record.aaguid,
+      attestationFormat: attestation.fmt,
+      transports: record.transports,
+      flags: { up: flags.up, uv: flags.uv, be: flags.be, bs: flags.bs },
+      backupEligible: record.backupEligible,
+      backupState: record.backupState,
+      deviceType: record.deviceType,
+    });
   }
 
   return record;
 }
 
-function buildVerifiedEvent(
-  record: NewCredentialRecord,
-  fmt: string,
-  credentialId: Base64Url,
-  aaguid: AaguidString,
-  transports: ReadonlyArray<AuthenticatorTransport>,
-  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean; at: boolean; ed: boolean },
-): RegistrationVerifiedEvent {
-  void record;
-  return {
-    credentialId,
-    aaguid,
-    attestationFormat: fmt,
-    transports,
-    flags: { up: flags.up, uv: flags.uv, be: flags.be, bs: flags.bs },
-    backupEligible: flags.be,
-    backupState: flags.bs,
-    deviceType: flags.be ? 'multiDevice' : 'singleDevice',
-  };
-}
-
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
+function validateCredentialKey(coseBytes: Uint8Array): void {
+  parseCoseKey(coseBytes);
 }
 
 function bytesToString(b: Uint8Array): string {
-  return new TextDecoder('utf-8', { fatal: false }).decode(b);
+  return new TextDecoder('utf-8', { fatal: true }).decode(b);
 }

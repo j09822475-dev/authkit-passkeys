@@ -60,6 +60,7 @@ export async function startRegistration(
   }
 
   const publicKey = parseRegistrationOptions(options);
+  const startedAt = Date.now();
   let credential: PublicKeyCredential | null;
   try {
     credential = (await navigator.credentials.create({
@@ -67,7 +68,7 @@ export async function startRegistration(
       ...(init?.signal ? { signal: init.signal } : {}),
     })) as PublicKeyCredential | null;
   } catch (cause) {
-    const mapped = mapDomException(cause);
+    const mapped = mapDomException(cause, Date.now() - startedAt);
     if (init?.onFallback) await init.onFallback(mapped);
     throw mapped;
   }

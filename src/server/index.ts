@@ -16,8 +16,8 @@ export {
 } from './verify-authentication.js';
 
 export {
-  issueChallenge,
-  verifyChallenge,
+  signChallengeToken,
+  verifyChallengeToken,
   type CeremonyKind,
 } from './challenge.js';
 

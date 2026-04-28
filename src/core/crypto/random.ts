@@ -1,4 +1,5 @@
 import { InternalError } from '../../errors/classes.js';
+import { webcrypto } from '#webcrypto-shim';
 
 /**
  * Cryptographically-secure random bytes via `crypto.getRandomValues`.
@@ -18,11 +19,11 @@ export function randomBytes(length: number): Uint8Array {
   if (!Number.isInteger(length) || length < 1 || length > 65536) {
     throw new InternalError(`randomBytes: length must be 1..65536, got ${length}.`);
   }
-  if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
+  if (!webcrypto || typeof webcrypto.getRandomValues !== 'function') {
     throw new InternalError(
-      'randomBytes: globalThis.crypto.getRandomValues is unavailable. ' +
+      'randomBytes: WebCrypto getRandomValues is unavailable. ' +
         'Node 18+ exposes it natively; older runtimes need a polyfill.',
     );
   }
-  return crypto.getRandomValues(new Uint8Array(length));
+  return webcrypto.getRandomValues(new Uint8Array(length));
 }

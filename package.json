@@ -58,6 +58,17 @@
     },
     "./package.json": "./package.json"
   },
+  "imports": {
+    "#webcrypto-shim": {
+      "types": "./dist/core/crypto/webcrypto-shim.d.ts",
+      "workerd": "./dist/core/crypto/webcrypto-shim.js",
+      "edge-light": "./dist/core/crypto/webcrypto-shim.js",
+      "deno": "./dist/core/crypto/webcrypto-shim.js",
+      "browser": "./dist/core/crypto/webcrypto-shim.js",
+      "node": "./dist/core/crypto/webcrypto-shim.node.js",
+      "default": "./dist/core/crypto/webcrypto-shim.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",

@@ -6,6 +6,8 @@ import {
 import { fromBase64Url, toBase64Url } from '../core/encoding/base64url.js';
 import { decodeUtf8, encodeUtf8 } from '../core/encoding/utf8.js';
 import { randomBytes } from '../core/crypto/random.js';
+import { timingSafeEqualBytes } from '../core/crypto/bytes.js';
+import { subtle } from '#webcrypto-shim';
 import type { Base64Url, ChallengeToken } from '../types/webauthn.js';
 import type { ChallengeSigningKeys } from '../types/options.js';
 import {
@@ -62,13 +64,13 @@ interface NormalizedKey {
  * @throws {InternalError}   When `ttlMs` is out of range or signing keys are missing.
  *
  * @example
- *   const { challenge, challengeToken } = await issueChallenge({
+ *   const { challenge, challengeToken } = await signChallengeToken({
  *     signingKeys: PASSKEY_SIGNING_KEYS,
  *     ceremony: 'reg',
  *     userId: encodeUtf8(user.id),
  *   });
  */
-export async function issueChallenge(input: {
+export async function signChallengeToken(input: {
   signingKeys: ChallengeSigningKeys;
   ceremony: CeremonyKind;
   userId?: Uint8Array;
@@ -108,7 +110,7 @@ export async function issueChallenge(input: {
  * Verify a challenge envelope: HMAC tag (constant-time via `crypto.subtle.verify`),
  * expiry, ceremony binding, and optional user binding.
  *
- * @param token        The token returned by {@link issueChallenge}.
+ * @param token        The token returned by {@link signChallengeToken}.
  * @param signingKeys  The same signing keys the issuer used (active + previous).
  * @param ceremony     The ceremony this verifier expects (`'reg'` or `'auth'`).
  * @param expectedUserId  Optional — when set, the envelope's `uid` must match.
@@ -117,9 +119,9 @@ export async function issueChallenge(input: {
  * @throws {WrongCeremonyError}          Ceremony binding does not match.
  *
  * @example
- *   const { challenge } = await verifyChallenge(token, signingKeys, 'reg');
+ *   const { challenge } = await verifyChallengeToken(token, signingKeys, 'reg');
  */
-export async function verifyChallenge(
+export async function verifyChallengeToken(
   token: ChallengeToken | string,
   signingKeys: ChallengeSigningKeys,
   ceremony: CeremonyKind,
@@ -158,6 +160,18 @@ export async function verifyChallenge(
     });
   }
 
+  // Ceremony binding — enforced BEFORE tag verify so a valid-HMAC envelope
+  // captured from one ceremony cannot be replayed at the other to probe
+  // signing-key liveness. The error is deterministic for any envelope (valid
+  // or forged HMAC) carrying the wrong ceremony, which means it leaks no
+  // information about the signing key.
+  if (payload.c !== ceremony) {
+    throw new WrongCeremonyError(
+      `Token ceremony "${payload.c}" does not match expected "${ceremony}".`,
+      { details: { reason: 'challenge_malformed' } },
+    );
+  }
+
   let sig: Uint8Array;
   try {
     sig = fromBase64Url(sigEnc);
@@ -173,16 +187,6 @@ export async function verifyChallenge(
     throw new InvalidChallengeTokenError('Challenge envelope tag mismatch.', {
       details: { reason: 'challenge_malformed' },
     });
-  }
-
-  // Ceremony binding — checked AFTER tag verify so a forged token with a
-  // wrong ceremony still emits the unhelpful-to-attackers `invalid_challenge_token`
-  // (rather than `wrong_ceremony` which would confirm a valid signing key).
-  if (payload.c !== ceremony) {
-    throw new WrongCeremonyError(
-      `Token ceremony "${payload.c}" does not match expected "${ceremony}".`,
-      { details: { reason: 'challenge_malformed' } },
-    );
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -255,30 +259,24 @@ function findKey(keys: ChallengeSigningKeys, kid: string): NormalizedKey | undef
 }
 
 async function hmac(secret: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey(
+  const key = await subtle.importKey(
     'raw',
     secret,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  return new Uint8Array(await crypto.subtle.sign('HMAC', key, data));
+  return new Uint8Array(await subtle.sign('HMAC', key, data));
 }
 
 async function hmacVerify(secret: Uint8Array, sig: Uint8Array, data: Uint8Array): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
+  const key = await subtle.importKey(
     'raw',
     secret,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['verify'],
   );
-  return crypto.subtle.verify('HMAC', key, sig, data);
+  return subtle.verify('HMAC', key, sig, data);
 }
 
-function timingSafeEqualBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= (a[i] as number) ^ (b[i] as number);
-  return diff === 0;
-}

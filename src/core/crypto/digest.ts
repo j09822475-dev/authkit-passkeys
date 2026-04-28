@@ -1,3 +1,5 @@
+import { subtle } from '#webcrypto-shim';
+
 /**
  * SHA-256 digest via WebCrypto.
  *
@@ -8,5 +10,5 @@
  *   const rpIdHash = await sha256(new TextEncoder().encode('acme.com'));
  */
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+  return new Uint8Array(await subtle.digest('SHA-256', data));
 }

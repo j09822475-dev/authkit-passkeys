@@ -4,6 +4,7 @@ import type { CoseAlgId } from '../../types/webauthn.js';
 import type { ParsedCoseKey } from '../../types/parsed.js';
 import { decodeCbor, type CborValue } from './cbor.js';
 import { COSE_CURVE, coseAlgToWebCrypto } from './algorithms.js';
+import { subtle } from '#webcrypto-shim';
 
 const KTY_OKP = 1;
 const KTY_EC2 = 2;
@@ -95,7 +96,7 @@ export async function importCoseKey(key: ParsedCoseKey): Promise<CryptoKey> {
     if (!key.n || !key.e) {
       throw bad('RSA COSE key is missing modulus or exponent.');
     }
-    return crypto.subtle.importKey(
+    return subtle.importKey(
       'jwk',
       {
         kty: 'RSA',
@@ -116,7 +117,7 @@ export async function importCoseKey(key: ParsedCoseKey): Promise<CryptoKey> {
     }
     const crvName = ec2CurveName(key.crv);
     const expectedLen = ec2CoordLen(key.crv);
-    return crypto.subtle.importKey(
+    return subtle.importKey(
       'jwk',
       {
         kty: 'EC',
@@ -139,7 +140,7 @@ export async function importCoseKey(key: ParsedCoseKey): Promise<CryptoKey> {
         details: { reason: 'unsupported_algorithm' },
       });
     }
-    return crypto.subtle.importKey('raw', key.x, algo.importParams, true, ['verify']);
+    return subtle.importKey('raw', key.x, algo.importParams, true, ['verify']);
   }
 
   throw new UnsupportedAlgorithmError(`Unsupported COSE kty ${key.kty}.`, {
@@ -157,7 +158,7 @@ export async function importCoseKey(key: ParsedCoseKey): Promise<CryptoKey> {
  */
 export async function exportCoseKeyAsSpki(key: ParsedCoseKey): Promise<Uint8Array> {
   const cryptoKey = await importCoseKey(key);
-  return new Uint8Array(await crypto.subtle.exportKey('spki', cryptoKey));
+  return new Uint8Array(await subtle.exportKey('spki', cryptoKey));
 }
 
 function ec2CurveName(crv: number | undefined): 'P-256' | 'P-384' | 'P-521' {

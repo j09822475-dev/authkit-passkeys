@@ -1,7 +1,7 @@
 import { encodeUtf8 } from '../core/encoding/utf8.js';
 import { toBase64Url } from '../core/encoding/base64url.js';
 import { coseAlgId } from '../core/cose/algorithms.js';
-import { issueChallenge } from './challenge.js';
+import { signChallengeToken } from './challenge.js';
 import {
   DEFAULT_PUB_KEY_CRED_ALG_NAMES,
   DEFAULT_TIMEOUT_MS,
@@ -11,7 +11,6 @@ import type { CredentialStore } from '../storage/types.js';
 import type {
   AttestationConveyancePreference,
   AuthenticatorAttachment,
-  Base64Url,
   ChallengeToken,
   CoseAlgName,
   PublicKeyCredentialDescriptorJSON,
@@ -99,7 +98,7 @@ export async function generateRegistrationOptions<TUserId extends string>(
   const userVerification = input.userVerification ?? DEFAULT_USER_VERIFICATION;
   const residentKey = input.residentKey ?? 'preferred';
 
-  const { challenge, challengeToken } = await issueChallenge({
+  const { challenge, challengeToken } = await signChallengeToken({
     signingKeys: input.signingKeys,
     ceremony: 'reg',
     userId: userIdBytes,
@@ -113,7 +112,7 @@ export async function generateRegistrationOptions<TUserId extends string>(
       name: input.user.name,
       displayName: input.user.displayName,
     },
-    challenge: toBase64Url(challenge) as Base64Url,
+    challenge: toBase64Url(challenge),
     pubKeyCredParams,
     timeout: input.timeout ?? DEFAULT_TIMEOUT_MS,
     excludeCredentials,

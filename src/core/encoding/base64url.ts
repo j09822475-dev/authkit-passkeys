@@ -1,4 +1,5 @@
 import { PasskeyError } from '../../errors/base.js';
+import type { PasskeyErrorCode } from '../../errors/codes.js';
 import type { Base64Url } from '../../types/webauthn.js';
 
 const BASE64URL_RE = /^[A-Za-z0-9_-]*$/;
@@ -26,19 +27,27 @@ export function toBase64Url(bytes: Uint8Array): Base64Url {
  * the standard base64 alphabet (`+/`) for compatibility, but rejects every
  * other character.
  *
- * @param input  base64url string.
- * @returns      Decoded byte array.
- * @throws {PasskeyError}  Code `'invalid_attestation'` (reason `'challenge_malformed'`)
- *                         when the input contains illegal characters.
+ * @param input      base64url string.
+ * @param errorCode  Public error code thrown on malformed input. Defaults to
+ *                   `'invalid_attestation'`. Browser-side option-parsing
+ *                   sites pass `'internal_error'` because no attestation has
+ *                   happened yet at that point.
+ * @returns          Decoded byte array.
+ * @throws {PasskeyError}  With `code = errorCode` (reason
+ *                         `'challenge_malformed'`) when the input contains
+ *                         illegal characters.
  *
  * @example
  *   fromBase64Url('AQID') // Uint8Array([1, 2, 3])
  */
-export function fromBase64Url(input: string): Uint8Array {
+export function fromBase64Url(
+  input: string,
+  errorCode: PasskeyErrorCode = 'invalid_attestation',
+): Uint8Array {
   const stripped = input.replace(/=+$/, '');
   const normalized = stripped.replace(/\+/g, '-').replace(/\//g, '_');
   if (!BASE64URL_RE.test(normalized)) {
-    throw new PasskeyError('invalid_attestation', 'Input is not valid base64url.', {
+    throw new PasskeyError(errorCode, 'Input is not valid base64url.', {
       details: { reason: 'challenge_malformed' },
     });
   }
@@ -54,19 +63,25 @@ export function fromBase64Url(input: string): Uint8Array {
  * Validate a string against the base64url alphabet and brand it as
  * {@link Base64Url}. Intended for narrowing untrusted input from the wire
  * (response.id, response.rawId, etc.) before it's passed into anything that
- * expects the branded type.
+ * expects the branded type. Strips trailing `=` padding before branding so
+ * the returned value never carries padding (the encoder never emits any).
  *
- * @param input  Candidate string.
- * @returns      The same string, branded.
- * @throws {PasskeyError}  Code `'invalid_attestation'` when the input is not valid base64url.
+ * @param input      Candidate string.
+ * @param errorCode  Public error code thrown on malformed input. Defaults to
+ *                   `'invalid_attestation'`.
+ * @returns          The padding-stripped, branded value.
+ * @throws {PasskeyError}  With `code = errorCode` when the input is not valid base64url.
  */
-export function assertBase64Url(input: string): Base64Url {
+export function assertBase64Url(
+  input: string,
+  errorCode: PasskeyErrorCode = 'invalid_attestation',
+): Base64Url {
   const stripped = input.replace(/=+$/, '');
   const normalized = stripped.replace(/\+/g, '-').replace(/\//g, '_');
   if (!BASE64URL_RE.test(normalized)) {
-    throw new PasskeyError('invalid_attestation', 'String is not valid base64url.');
+    throw new PasskeyError(errorCode, 'String is not valid base64url.');
   }
-  return input as Base64Url;
+  return stripped as Base64Url;
 }
 
 /**

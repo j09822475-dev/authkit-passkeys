@@ -56,28 +56,27 @@ authkit-passkeys/
 │   ├── core/                          # Runtime-agnostic primitives. Works wherever WebCrypto exists.
 │   │   ├── index.ts                   # Internal barrel — NOT a published entry point.
 │   │   ├── encoding/
-│   │   │   ├── base64url.ts           # toBase64Url / fromBase64Url. Uint8Array ↔ string. No deps.
+│   │   │   ├── base64url.ts           # toBase64Url / fromBase64Url / assertBase64Url. Uint8Array ↔ string. No deps.
 │   │   │   ├── utf8.ts                # encodeUtf8 / decodeUtf8 — thin wrappers around TextEncoder/Decoder.
-│   │   │   └── hex.ts                 # toHex / fromHex — used for AAGUID display only.
-│   │   ├── cbor/
-│   │   │   └── decode.ts              # ~1 KB CBOR decoder. Maps, arrays, bytes, text, uint, nint, tagged. No encode.
+│   │   │   └── hex.ts                 # toHex / fromHex / aaguidToUuid — used for AAGUID display only.
 │   │   ├── cose/
 │   │   │   ├── algorithms.ts          # COSE alg IDs (-7 ES256, -35 ES384, -8 EdDSA, -257 RS256, …).
-│   │   │   ├── key.ts                 # parseCoseKey() → typed COSE key.
-│   │   │   └── import.ts              # importIntoWebCrypto(coseKey) → CryptoKey for verify.
+│   │   │   ├── cbor.ts                # ~1 KB CBOR decoder. Maps, arrays, bytes, text, uint, nint, tagged, float16/32/64. No encode.
+│   │   │   └── key.ts                 # parseCoseKey() → typed COSE key, importCoseKey() → CryptoKey, exportCoseKeyAsSpki().
 │   │   ├── crypto/
+│   │   │   ├── bytes.ts               # equalBytes / concatBytes / timingSafeEqualBytes — shared byte-array helpers.
 │   │   │   ├── random.ts              # randomBytes(length) via crypto.getRandomValues. Pure WebCrypto.
 │   │   │   ├── digest.ts              # sha256(data) via crypto.subtle.digest. Pure WebCrypto.
 │   │   │   ├── der.ts                 # ECDSA raw r||s ↔ DER SEQUENCE — required because COSE/WebAuthn ship DER.
-│   │   │   ├── verify.ts              # verifySignature(key, sig, data) — multi-alg dispatcher. Imports webcrypto-shim only.
+│   │   │   ├── verify.ts              # verifySignature(key, sig, data) + dummyVerify (timing-equalisation). Imports webcrypto-shim only.
 │   │   │   ├── webcrypto-shim.ts      # `export const subtle = globalThis.crypto.subtle;` — default for browser/edge.
 │   │   │   └── webcrypto-shim.node.ts # Node-only override; resolves `node:crypto` ONLY under default Node condition.
-│   │   ├── webauthn/
-│   │   │   ├── auth-data.ts           # parseAuthenticatorData() → flags, counter, AAGUID, credentialPublicKey.
-│   │   │   ├── client-data.ts         # parseClientDataJSON() + assertClientData() (origin, type, challenge).
-│   │   │   ├── flags.ts               # decodeFlags(byte) — UP, UV, BE, BS, AT, ED bits.
-│   │   │   └── transports.ts          # AuthenticatorTransport union + normalisation.
-│   │   └── time.ts                    # now() — single source of monotonic time, mockable in tests.
+│   │   └── ceremony/
+│   │       ├── auth-data.ts           # parseAuthenticatorData() → flags, counter, AAGUID, credentialPublicKey.
+│   │       ├── client-data.ts         # parseClientDataJSON() + assertExpectedClientData() (origin, type, challenge).
+│   │       ├── flags.ts               # decodeFlags(byte) — UP, UV, BE, BS, AT, ED bits.
+│   │       ├── attestation.ts         # parseAttestationObject() — CBOR → fmt / authData / attStmt.
+│   │       └── rp-id.ts               # assertOriginMatchesRpId / deriveRpIdFromOrigin.
 │   │
 │   ├── browser/                       # Subpath: "@authkit/passkeys/browser". Browser-only ceremony.
 │   │   ├── index.ts                   # Public surface: startRegistration, startAuthentication, isPasskeySupported, …

@@ -3,9 +3,10 @@ import {
   CounterRegressionError,
   InvalidRpIdError,
 } from '../errors/classes.js';
-import { fromBase64Url } from '../core/encoding/base64url.js';
+import { assertBase64Url, fromBase64Url } from '../core/encoding/base64url.js';
 import { encodeUtf8 } from '../core/encoding/utf8.js';
 import { sha256 } from '../core/crypto/digest.js';
+import { concatBytes, equalBytes } from '../core/crypto/bytes.js';
 import { dummyVerify, verifySignature } from '../core/crypto/verify.js';
 import { parseCoseKey } from '../core/cose/key.js';
 import {
@@ -14,7 +15,7 @@ import {
   parseAuthenticatorData,
   parseClientDataJSON,
 } from '../core/ceremony/index.js';
-import { verifyChallenge } from './challenge.js';
+import { verifyChallengeToken } from './challenge.js';
 import { assertUserVerification } from './policy/user-verification.js';
 import type { CredentialStore } from '../storage/types.js';
 import type {
@@ -86,7 +87,7 @@ export async function verifyAuthentication<TUserId extends string>(
 ): Promise<VerifiedAuthentication<TUserId>> {
   const requireUv = input.requireUserVerification ?? true;
 
-  const { challenge: expectedChallenge } = await verifyChallenge(
+  const { challenge: expectedChallenge } = await verifyChallengeToken(
     input.challengeToken,
     input.signingKeys,
     'auth',
@@ -121,11 +122,23 @@ export async function verifyAuthentication<TUserId extends string>(
   }
 
   const clientDataHash = await sha256(clientDataBytes);
-  const signedData = concat(authDataBytes, clientDataHash);
+  const signedData = concatBytes(authDataBytes, clientDataHash);
 
   // Credential lookup (PLAN §9.10). Both branches end up running a real WebCrypto
-  // verify so timing does not branch on credential existence.
-  const credentialId = input.response.id as Base64Url;
+  // verify so timing does not branch on credential existence. The id from the
+  // response is untrusted — validate the base64url alphabet at the trust
+  // boundary before it reaches the store, and collapse failures into the
+  // single public `authentication_failed` bucket.
+  let credentialId: Base64Url;
+  try {
+    credentialId = assertBase64Url(input.response.id);
+  } catch (cause) {
+    await dummyVerify(signedData);
+    throw new AuthenticationFailedError(undefined, {
+      cause,
+      details: { reason: 'unknown_credential' },
+    });
+  }
   const credential = await input.store.findByCredentialId(credentialId);
   if (!credential) {
     await dummyVerify(signedData);
@@ -202,15 +215,3 @@ export async function verifyAuthentication<TUserId extends string>(
   };
 }
 
-function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}

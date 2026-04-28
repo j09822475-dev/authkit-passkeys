@@ -1,11 +1,10 @@
 import { encodeUtf8 } from '../core/encoding/utf8.js';
 import { toBase64Url } from '../core/encoding/base64url.js';
-import { issueChallenge } from './challenge.js';
+import { signChallengeToken } from './challenge.js';
 import { DEFAULT_TIMEOUT_MS, DEFAULT_USER_VERIFICATION } from './defaults.js';
 import type { CredentialStore } from '../storage/types.js';
 import type {
   AuthenticationOptionsJSON,
-  Base64Url,
   ChallengeToken,
   PublicKeyCredentialDescriptorJSON,
   UserVerificationRequirement,
@@ -63,7 +62,7 @@ export async function generateAuthenticationOptions<TUserId extends string>(
   }
 
   const userIdBytes = input.user ? encodeUtf8(input.user.id) : undefined;
-  const { challenge, challengeToken } = await issueChallenge({
+  const { challenge, challengeToken } = await signChallengeToken({
     signingKeys: input.signingKeys,
     ceremony: 'auth',
     ...(userIdBytes ? { userId: userIdBytes } : {}),
@@ -71,7 +70,7 @@ export async function generateAuthenticationOptions<TUserId extends string>(
   });
 
   const options: AuthenticationOptionsJSON = {
-    challenge: toBase64Url(challenge) as Base64Url,
+    challenge: toBase64Url(challenge),
     timeout: input.timeout ?? DEFAULT_TIMEOUT_MS,
     rpId: input.rp.id,
     ...(allowCredentials ? { allowCredentials } : {}),

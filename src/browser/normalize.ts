@@ -1,9 +1,8 @@
-import { toBase64Url } from '../core/encoding/base64url.js';
+import { assertBase64Url, toBase64Url } from '../core/encoding/base64url.js';
 import type {
   AuthenticationResponseJSON,
   AuthenticatorAttachment,
   AuthenticatorTransport,
-  Base64Url,
   PasskeyExtensionResultsJSON,
   RegistrationResponseJSON,
 } from '../types/webauthn.js';
@@ -27,7 +26,7 @@ export function normalizeRegistrationResponse(
   const transportsTyped = transports.filter(isTransport);
 
   const out: RegistrationResponseJSON = {
-    id: credential.id as Base64Url,
+    id: assertBase64Url(credential.id),
     rawId: toBase64Url(new Uint8Array(credential.rawId)),
     type: 'public-key',
     response: {
@@ -56,7 +55,7 @@ export function normalizeAuthenticationResponse(
   const response = credential.response as AuthenticatorAssertionResponse;
 
   const out: AuthenticationResponseJSON = {
-    id: credential.id as Base64Url,
+    id: assertBase64Url(credential.id),
     rawId: toBase64Url(new Uint8Array(credential.rawId)),
     type: 'public-key',
     response: {

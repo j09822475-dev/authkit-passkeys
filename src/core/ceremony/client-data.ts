@@ -3,8 +3,9 @@ import {
   InvalidChallengeError,
   InvalidOriginError,
 } from '../../errors/classes.js';
-import { fromBase64Url, toBase64Url } from '../encoding/base64url.js';
+import { fromBase64Url } from '../encoding/base64url.js';
 import { decodeUtf8 } from '../encoding/utf8.js';
+import { timingSafeEqualBytes } from '../crypto/bytes.js';
 import type { ParsedClientData } from '../../types/parsed.js';
 
 interface ClientDataJSONShape {
@@ -90,19 +91,20 @@ export function assertExpectedClientData(
     );
   }
 
-  const expectedChallengeStr = toBase64Url(expectedChallenge);
-  if (data.challenge !== expectedChallengeStr) {
-    let actual: Uint8Array | undefined;
-    try {
-      actual = fromBase64Url(data.challenge);
-    } catch {
-      // ignore
-    }
-    if (!actual || !timingSafeEqualBytes(actual, expectedChallenge)) {
-      throw new InvalidChallengeError(undefined, {
-        details: { reason: 'challenge_mismatch' },
-      });
-    }
+  // Always compare bytes through `timingSafeEqualBytes`. A `===` short-circuit
+  // would leak nothing about a public nonce by itself, but mixing constant-time
+  // and short-circuit comparisons in ceremony code invites the wrong pattern
+  // to be copy-pasted into a key-comparison site later. Single-style only.
+  let actual: Uint8Array | undefined;
+  try {
+    actual = fromBase64Url(data.challenge);
+  } catch {
+    // ignore — falls through to the equality check below, which fails on undefined.
+  }
+  if (!actual || !timingSafeEqualBytes(actual, expectedChallenge)) {
+    throw new InvalidChallengeError(undefined, {
+      details: { reason: 'challenge_mismatch' },
+    });
   }
 
   const allowed = typeof expectedOrigins === 'string' ? [expectedOrigins] : expectedOrigins;
@@ -111,13 +113,6 @@ export function assertExpectedClientData(
       details: { actualOrigin: data.origin, expectedOrigin: allowed },
     });
   }
-}
-
-function timingSafeEqualBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= (a[i] as number) ^ (b[i] as number);
-  return diff === 0;
 }
 
 function bad(msg: string, cause?: unknown): PasskeyError {

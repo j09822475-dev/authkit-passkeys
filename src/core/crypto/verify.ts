@@ -9,6 +9,7 @@ import {
 } from '../cose/algorithms.js';
 import { importCoseKey } from '../cose/key.js';
 import { derToRawEcdsa } from './der.js';
+import { subtle } from '#webcrypto-shim';
 
 /**
  * Verify a signature against a parsed COSE key. Dispatches to the correct
@@ -41,25 +42,54 @@ export async function verifySignature(
     ? derToRawEcdsa(signature, ec2ComponentLength(coseKey))
     : signature;
 
-  return crypto.subtle.verify(algo.verifyParams, cryptoKey, sig, data);
+  return subtle.verify(algo.verifyParams, cryptoKey, sig, data);
+}
+
+/**
+ * Fixed P-256 public-key JWK used to seed {@link dummyVerify}. The point is a
+ * published RFC 7515 test vector — no private key is implied; a deterministic
+ * value lets the import be cached so the unknown-credential branch does not
+ * pay the cost of `crypto.subtle.generateKey` (which is orders of magnitude
+ * slower than `subtle.verify` and would invert the timing-equalisation
+ * promise from PLAN §9.10 / §9.14).
+ */
+const DUMMY_P256_JWK: JsonWebKey = {
+  kty: 'EC',
+  crv: 'P-256',
+  x: 'MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4',
+  y: '4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM',
+  ext: true,
+  key_ops: ['verify'],
+};
+
+let dummyVerifyKey: Promise<CryptoKey> | undefined;
+function getDummyVerifyKey(): Promise<CryptoKey> {
+  if (!dummyVerifyKey) {
+    dummyVerifyKey = subtle.importKey(
+      'jwk',
+      DUMMY_P256_JWK,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    );
+  }
+  return dummyVerifyKey;
 }
 
 /**
  * Constant-time-shape dummy verify. Run on the unknown-credential path so
- * authentication wall-clock time and error shape match a real failed verify
- * (PLAN §9.10 / §9.14).
+ * authentication wall-clock time and error shape match the real
+ * `verifySignature` branch (PLAN §9.10 / §9.14). Reuses a cached
+ * `CryptoKey` so the per-request work is exactly one `subtle.verify` —
+ * matching the verifying branch.
  *
  * @param data  The bytes that would have been verified.
  * @returns     Always `false`.
  */
 export async function dummyVerify(data: Uint8Array): Promise<boolean> {
-  const key = await crypto.subtle.generateKey(
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    false,
-    ['sign', 'verify'],
-  );
+  const key = await getDummyVerifyKey();
   const fakeSig = new Uint8Array(64);
-  return crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key.publicKey, fakeSig, data);
+  return subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, fakeSig, data);
 }
 
 function ec2ComponentLength(key: ParsedCoseKey): number {

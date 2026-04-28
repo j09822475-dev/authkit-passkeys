@@ -24,17 +24,17 @@ export function parseRegistrationOptions(
   return {
     rp: json.rp,
     user: {
-      id: fromBase64Url(json.user.id),
+      id: fromBase64Url(json.user.id, 'internal_error'),
       name: json.user.name,
       displayName: json.user.displayName,
     },
-    challenge: fromBase64Url(json.challenge),
+    challenge: fromBase64Url(json.challenge, 'internal_error'),
     pubKeyCredParams: json.pubKeyCredParams.map((p) => ({ type: p.type, alg: p.alg })),
     ...(json.timeout !== undefined ? { timeout: json.timeout } : {}),
     ...(json.excludeCredentials
       ? {
           excludeCredentials: json.excludeCredentials.map((c) => ({
-            id: fromBase64Url(c.id),
+            id: fromBase64Url(c.id, 'internal_error'),
             type: c.type,
             ...(c.transports
               ? { transports: c.transports as unknown as AuthenticatorTransport[] }
@@ -65,13 +65,13 @@ export function parseAuthenticationOptions(
   json: AuthenticationOptionsJSON,
 ): PublicKeyCredentialRequestOptions {
   return {
-    challenge: fromBase64Url(json.challenge),
+    challenge: fromBase64Url(json.challenge, 'internal_error'),
     ...(json.timeout !== undefined ? { timeout: json.timeout } : {}),
     ...(json.rpId ? { rpId: json.rpId } : {}),
     ...(json.allowCredentials
       ? {
           allowCredentials: json.allowCredentials.map((c) => ({
-            id: fromBase64Url(c.id),
+            id: fromBase64Url(c.id, 'internal_error'),
             type: c.type,
             ...(c.transports
               ? { transports: c.transports as unknown as AuthenticatorTransport[] }
