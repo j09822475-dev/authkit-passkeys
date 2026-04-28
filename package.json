@@ -1,7 +1,7 @@
 {
   "name": "@authkit/passkeys",
   "version": "0.1.0",
-  "description": "Lightweight, framework-agnostic passkey/WebAuthn library — isomorphic core for browser, Node and edge runtimes (Cloudflare Workers, Vercel Edge, Deno, Bun) with adapters for Next.js, Hono, Express, Fastify, NestJS, tRPC, React, Vue and SvelteKit. <10KB gzipped. Zero runtime cbor/asn1 dependencies.",
+  "description": "Lightweight, framework-agnostic passkey/WebAuthn library — isomorphic core for browser, Node and edge runtimes (Cloudflare Workers, Vercel Edge, Deno, Bun) with adapters for Next.js, Hono, Express, Fastify, NestJS, tRPC, React, Vue and SvelteKit. <6KB gzipped client core, <12KB gzipped default server bundle (none + packed attestation; apple/fido-u2f/tpm/android-key are dynamic imports). Zero runtime cbor/asn1 dependencies.",
   "type": "module",
   "license": "MIT",
   "author": {
@@ -119,10 +119,20 @@
       "import": "./dist/storage/prisma.js",
       "require": "./dist/storage/prisma.cjs"
     },
-    "./storage/drizzle": {
-      "types": "./dist/storage/drizzle.d.ts",
-      "import": "./dist/storage/drizzle.js",
-      "require": "./dist/storage/drizzle.cjs"
+    "./storage/drizzle-pg": {
+      "types": "./dist/storage/drizzle-pg.d.ts",
+      "import": "./dist/storage/drizzle-pg.js",
+      "require": "./dist/storage/drizzle-pg.cjs"
+    },
+    "./storage/drizzle-mysql": {
+      "types": "./dist/storage/drizzle-mysql.d.ts",
+      "import": "./dist/storage/drizzle-mysql.js",
+      "require": "./dist/storage/drizzle-mysql.cjs"
+    },
+    "./storage/drizzle-sqlite": {
+      "types": "./dist/storage/drizzle-sqlite.d.ts",
+      "import": "./dist/storage/drizzle-sqlite.js",
+      "require": "./dist/storage/drizzle-sqlite.cjs"
     },
     "./storage/kysely": {
       "types": "./dist/storage/kysely.d.ts",
@@ -130,6 +140,16 @@
       "require": "./dist/storage/kysely.cjs"
     },
     "./package.json": "./package.json"
+  },
+  "imports": {
+    "#webcrypto-shim": {
+      "workerd": "./dist/core/crypto/webcrypto-shim.js",
+      "edge-light": "./dist/core/crypto/webcrypto-shim.js",
+      "deno": "./dist/core/crypto/webcrypto-shim.js",
+      "browser": "./dist/core/crypto/webcrypto-shim.js",
+      "node": "./dist/core/crypto/webcrypto-shim.node.js",
+      "default": "./dist/core/crypto/webcrypto-shim.js"
+    }
   },
   "files": [
     "dist",
@@ -222,17 +242,17 @@
   },
   "size-limit": [
     {
-      "name": "browser ceremony (register + authenticate)",
+      "name": "browser ceremony (startRegistration + startAuthentication)",
       "path": "dist/browser/index.js",
       "limit": "6 KB"
     },
     {
-      "name": "server ceremony (full ES256 + RS256 + EdDSA)",
+      "name": "server ceremony default bundle (none + packed; ES256 + EdDSA + RS256)",
       "path": "dist/server/index.js",
       "limit": "12 KB"
     },
     {
-      "name": "server ceremony (edge build)",
+      "name": "server ceremony default bundle (edge build)",
       "path": "dist/server/index.edge.js",
       "limit": "12 KB"
     },

@@ -1,8 +1,8 @@
 # `@authkit/passkeys` — Architecture Plan
 
 > A lightweight, framework-agnostic passkey/WebAuthn library for browser, Node, and edge runtimes.
-> Headline targets: **≤6 KB gzipped browser ceremony**, **≤12 KB gzipped server ceremony**, **zero `cbor` / `asn1js` / `node:crypto` runtime dependencies**.
-> Differentiation vs `@simplewebauthn`: opinionated user-flow API (one `register()` / `authenticate()` browser pair, mirroring server method names, instead of six functions); fully isomorphic core on WebCrypto so the same server bundle runs on Node, Cloudflare Workers, Vercel Edge, Deno and Bun without an adapter layer; first-class `onFallback` hook for graceful password / magic-link degradation; built-in framework adapters; <1 KB hand-rolled COSE-key parser instead of pulling in `cbor`+`asn1js`.
+> Headline targets: **≤6 KB gzipped browser ceremony**, **≤12 KB gzipped server ceremony default bundle**, **zero `cbor` / `asn1js` / `node:crypto` runtime dependencies**.
+> Differentiation vs `@simplewebauthn`: opinionated user-flow API (`startRegistration()` / `startAuthentication()` browser pair, mirroring server method names) — `/browser` exposes a small surface (the two ceremony entry points, three feature-detection helpers, two parse helpers); fully isomorphic core on WebCrypto so the same server bundle runs on Node, Cloudflare Workers, Vercel Edge, Deno and Bun without an adapter layer; first-class `onFallback` notification hook for graceful password / magic-link degradation; built-in framework adapters; <1 KB hand-rolled COSE-key parser instead of pulling in `cbor`+`asn1js`.
 
 ---
 
@@ -66,10 +66,12 @@ authkit-passkeys/
 │   │   │   ├── key.ts                 # parseCoseKey() → typed COSE key.
 │   │   │   └── import.ts              # importIntoWebCrypto(coseKey) → CryptoKey for verify.
 │   │   ├── crypto/
-│   │   │   ├── random.ts              # randomBytes(length) via crypto.getRandomValues.
-│   │   │   ├── digest.ts              # sha256(data) via crypto.subtle.digest.
+│   │   │   ├── random.ts              # randomBytes(length) via crypto.getRandomValues. Pure WebCrypto.
+│   │   │   ├── digest.ts              # sha256(data) via crypto.subtle.digest. Pure WebCrypto.
 │   │   │   ├── der.ts                 # ECDSA raw r||s ↔ DER SEQUENCE — required because COSE/WebAuthn ship DER.
-│   │   │   └── verify.ts              # verifySignature(key, sig, data) — multi-alg dispatcher.
+│   │   │   ├── verify.ts              # verifySignature(key, sig, data) — multi-alg dispatcher. Imports webcrypto-shim only.
+│   │   │   ├── webcrypto-shim.ts      # `export const subtle = globalThis.crypto.subtle;` — default for browser/edge.
+│   │   │   └── webcrypto-shim.node.ts # Node-only override; resolves `node:crypto` ONLY under default Node condition.
 │   │   ├── webauthn/
 │   │   │   ├── auth-data.ts           # parseAuthenticatorData() → flags, counter, AAGUID, credentialPublicKey.
 │   │   │   ├── client-data.ts         # parseClientDataJSON() + assertClientData() (origin, type, challenge).
@@ -78,9 +80,9 @@ authkit-passkeys/
 │   │   └── time.ts                    # now() — single source of monotonic time, mockable in tests.
 │   │
 │   ├── browser/                       # Subpath: "@authkit/passkeys/browser". Browser-only ceremony.
-│   │   ├── index.ts                   # Public surface: register, authenticate, isPasskeySupported, …
-│   │   ├── register.ts                # Wraps navigator.credentials.create. Handles base64url, abort, errors.
-│   │   ├── authenticate.ts            # Wraps navigator.credentials.get. Conditional UI + abort.
+│   │   ├── index.ts                   # Public surface: startRegistration, startAuthentication, isPasskeySupported, …
+│   │   ├── start-registration.ts      # Wraps navigator.credentials.create. Handles base64url, abort, errors.
+│   │   ├── start-authentication.ts    # Wraps navigator.credentials.get. Conditional UI + abort.
 │   │   ├── conditional-ui.ts          # startConditionalUI() — scoped helper, manages AbortController.
 │   │   ├── feature-detection.ts       # isPasskeySupported, isConditionalUISupported, isPlatformAuthenticatorAvailable.
 │   │   ├── parse-options.ts           # Polyfill for parseCreationOptionsFromJSON / parseRequestOptionsFromJSON.
@@ -92,15 +94,15 @@ authkit-passkeys/
 │   │   ├── generate-authentication-options.ts
 │   │   ├── verify-registration.ts     # Verify attestation, parse public key, return CredentialRecord seed.
 │   │   ├── verify-authentication.ts   # Verify assertion signature, counter, RP-ID, origin.
-│   │   ├── challenge.ts               # createChallenge() / signSession() / verifySession() — short-lived JWS-lite.
+│   │   ├── challenge.ts               # createChallenge() / signChallengeToken() / verifyChallengeToken() — kid-aware HMAC envelope.
 │   │   ├── attestation/
-│   │   │   ├── index.ts               # verifyAttestation() — strategy dispatch by fmt.
-│   │   │   ├── none.ts                # "none" — accept, no chain validation.
-│   │   │   ├── packed.ts              # "packed" self + attCA. Most common modern.
-│   │   │   ├── fido-u2f.ts            # Legacy U2F format (still produced by some hardware keys).
-│   │   │   ├── android-key.ts         # (Stretch goal — gated by config, behind dynamic import.)
-│   │   │   ├── apple.ts               # Apple anonymous attestation.
-│   │   │   └── tpm.ts                 # (Stretch goal — gated, dynamic import.)
+│   │   │   ├── index.ts               # verifyAttestation() — strategy dispatch by fmt; lazy-loads non-default formats.
+│   │   │   ├── none.ts                # "none" — accept, no chain validation. SHIPPED IN DEFAULT BUNDLE.
+│   │   │   ├── packed.ts              # "packed" self + attCA. SHIPPED IN DEFAULT BUNDLE.
+│   │   │   ├── fido-u2f.ts            # Legacy U2F — DYNAMIC IMPORT, off the default-bundle hot path.
+│   │   │   ├── android-key.ts         # Stretch — DYNAMIC IMPORT, gated by config.
+│   │   │   ├── apple.ts               # Apple anonymous attestation — DYNAMIC IMPORT (X.509 SPKI work is heavy).
+│   │   │   └── tpm.ts                 # Stretch — DYNAMIC IMPORT, gated by config.
 │   │   └── policy/
 │   │       ├── aaguid.ts              # AAGUID allow/deny lists for enterprise mode.
 │   │       ├── rp-id.ts               # rpId/origin matching helpers.
@@ -113,11 +115,13 @@ authkit-passkeys/
 │   │   └── verify-chain.ts            # Verify MDS BLOB JWS chain against FIDO root cert.
 │   │
 │   ├── storage/                       # Storage adapters. Each is its own subpath export.
-│   │   ├── types.ts                   # CredentialStore<TUserId> interface (the contract).
+│   │   ├── types.ts                   # CredentialStore<TUserId> interface, CredentialRecord, NewCredentialRecord.
 │   │   ├── memory.ts                  # In-memory adapter — testing only.
-│   │   ├── prisma.ts                  # createPrismaCredentialStore({ prisma, model? }).
-│   │   ├── drizzle.ts                 # createDrizzleCredentialStore({ db, table }).
-│   │   └── kysely.ts                  # createKyselyCredentialStore({ db, table }).
+│   │   ├── prisma.ts                  # createPrismaCredentialStore({ delegate }) — schema-checked Prisma delegate.
+│   │   ├── drizzle-pg.ts              # createDrizzlePgCredentialStore({ db, table: PgTable<…> }).
+│   │   ├── drizzle-mysql.ts           # createDrizzleMySqlCredentialStore({ db, table: MySqlTable<…> }).
+│   │   ├── drizzle-sqlite.ts          # createDrizzleSqliteCredentialStore({ db, table: SQLiteTable<…> }).
+│   │   └── kysely.ts                  # createKyselyCredentialStore<DB>({ db: Kysely<DB>, table: keyof DB & string }).
 │   │
 │   ├── adapters/                      # Framework adapters. Each is its own subpath.
 │   │   ├── next/
@@ -198,12 +202,14 @@ Every exported symbol below is part of the **stable v0.1 contract**. JSDoc shown
  * decoding internally, and returns a JSON-safe {@link RegistrationResponse}
  * ready to POST back to the server.
  *
- * Use {@link isPasskeySupported} to feature-detect first. If passkeys are
- * unavailable or the user cancels, this throws a typed {@link PasskeyError};
- * pass `onFallback` to gracefully redirect to your password / magic-link flow.
+ * Use {@link isPasskeySupported} to feature-detect first. The promise rejects
+ * with a typed {@link PasskeyError} on failure; the optional {@link RegisterInit.onFallback}
+ * is a fire-and-forget notification hook that lets you log/redirect alongside
+ * the rethrow — it does NOT swallow. Catch the error yourself if you need to
+ * suppress it.
  *
  * @param options Registration options as returned by the server.
- * @param init    Optional client-side knobs (AbortSignal, fallback hook).
+ * @param init    Optional client-side knobs (AbortSignal, notification hook).
  * @returns       A JSON-safe attestation response. Send it back to the server.
  *
  * @throws {PasskeyError} `not_supported` when WebAuthn is unavailable.
@@ -213,12 +219,16 @@ Every exported symbol below is part of the **stable v0.1 contract**. JSDoc shown
  *
  * @example
  * const opts = await fetch('/api/passkey/register/options').then(r => r.json());
- * const response = await register(opts, {
- *   onFallback: (err) => router.push(`/login?fallback=${err.code}`),
- * });
- * await fetch('/api/passkey/register/verify', { method: 'POST', body: JSON.stringify(response) });
+ * try {
+ *   const response = await startRegistration(opts, {
+ *     onFallback: (err) => analytics.track('passkey_register_failed', { code: err.code }),
+ *   });
+ *   await fetch('/api/passkey/register/verify', { method: 'POST', body: JSON.stringify(response) });
+ * } catch (err) {
+ *   if (isPasskeyError(err) && err.code === 'not_supported') router.push('/login/password');
+ * }
  */
-export function register(
+export function startRegistration(
   options: RegistrationOptionsJSON,
   init?: RegisterInit,
 ): Promise<RegistrationResponseJSON>;
@@ -226,8 +236,12 @@ export function register(
 export interface RegisterInit {
   /** Abort the ceremony from your component lifecycle. */
   signal?: AbortSignal;
-  /** Called with the typed PasskeyError before it is rethrown. Return `true` to swallow. */
-  onFallback?: (err: PasskeyError) => boolean | void | Promise<boolean | void>;
+  /**
+   * Notification hook fired with the typed PasskeyError immediately before it
+   * is rethrown. Return value is ignored — use this for logging / analytics /
+   * routing side effects. To suppress the error, wrap the call in try/catch.
+   */
+  onFallback?: (err: PasskeyError) => void | Promise<void>;
 }
 ```
 
@@ -237,30 +251,38 @@ export interface RegisterInit {
  *
  * Wraps `navigator.credentials.get()`. Pass `mediation: 'conditional'` to
  * enable autofill UI (Conditional UI) — the input element receiving the
- * `webauthn` autocomplete token will surface available passkeys.
+ * `webauthn` autocomplete token will surface available passkeys. Callers
+ * MUST gate the `'conditional'` path on a successful {@link isConditionalUISupported}
+ * check; this function throws `NotSupportedError` synchronously if the UA
+ * does not support conditional mediation (see §9.8).
  *
  * @example  Discoverable login (no username collected):
  *   const opts = await fetch('/api/passkey/login/options').then(r => r.json());
- *   const response = await authenticate(opts);
+ *   const response = await startAuthentication(opts);
  *   const { user } = await fetch('/api/passkey/login/verify', { method: 'POST', body: JSON.stringify(response) }).then(r => r.json());
  *
  * @example  Conditional UI (autofill in <input autocomplete="username webauthn">):
+ *   if (!(await isConditionalUISupported())) return;
  *   const ctrl = new AbortController();
  *   const opts = await fetch('/api/passkey/login/options').then(r => r.json());
- *   authenticate(opts, { mediation: 'conditional', signal: ctrl.signal })
+ *   startAuthentication(opts, { mediation: 'conditional', signal: ctrl.signal })
  *     .then(handleLogin)
  *     .catch(() => {});
  *   // ...later, on form submit:
  *   ctrl.abort();
  */
-export function authenticate(
+export function startAuthentication(
   options: AuthenticationOptionsJSON,
   init?: AuthenticateInit,
 ): Promise<AuthenticationResponseJSON>;
 
 export interface AuthenticateInit extends RegisterInit {
-  /** `'conditional'` to opt into autofill UI; default is the browser default. */
-  mediation?: 'conditional' | 'optional' | 'required' | 'silent';
+  /**
+   * `'conditional'` opts into autofill UI; `'required'` forces a UI prompt;
+   * `'optional'` is the browser default. The WebAuthn `'silent'` value is
+   * intentionally excluded — it does not apply to passkey ceremonies.
+   */
+  mediation?: 'conditional' | 'optional' | 'required';
 }
 ```
 
@@ -287,31 +309,50 @@ export function parseAuthenticationOptions(json: AuthenticationOptionsJSON): Pub
  *
  * Generates a fresh challenge, looks up the user's existing credentials via
  * the configured {@link CredentialStore}, and returns the JSON shape the
- * browser's {@link register} consumes.
+ * browser's {@link startRegistration} consumes.
  *
- * Persists the challenge in a stateless signed envelope (`session`) — your
- * server stays stateless. Pass that envelope to {@link verifyRegistration}.
+ * Persists the challenge in a stateless signed envelope (`challengeToken`) —
+ * your server stays stateless. Pass that token verbatim to
+ * {@link verifyRegistration}. The envelope payload is bound to the registration
+ * ceremony (`ceremony: 'reg'`) so it cannot be replayed against an authentication
+ * call (see §9.5).
  *
  * @example
- * const { options, session } = await generateRegistrationOptions({
+ * const { options, challengeToken } = await generateRegistrationOptions({
  *   rp: { id: 'example.com', name: 'Example' },
  *   user: { id: user.id, name: user.email, displayName: user.name },
  *   store,
+ *   signingKeys: PASSKEY_SIGNING_KEYS, // explicit; never read from globals
  * });
- * setCookie('passkey_reg', session, { httpOnly: true, sameSite: 'strict', maxAge: 300 });
+ * setCookie('passkey_reg', challengeToken, { httpOnly: true, sameSite: 'strict', maxAge: 300 });
  * return Response.json(options);
  */
 export function generateRegistrationOptions<TUserId extends string>(
   input: GenerateRegistrationInput<TUserId>,
-): Promise<{ options: RegistrationOptionsJSON; session: SessionToken }>;
+): Promise<{ options: RegistrationOptionsJSON; challengeToken: ChallengeToken }>;
 
 export interface GenerateRegistrationInput<TUserId extends string> {
   rp: { id: string; name: string };
   user: { id: TUserId; name: string; displayName: string };
   store: CredentialStore<TUserId>;
-  /** Default: ['ES256','RS256','EdDSA']. Order = preference. */
+  /**
+   * Required. Caller-supplied signing keys for the stateless challenge envelope.
+   * No global / env-var lookup — workerd, edge-light, deno bind secrets per-request.
+   * See {@link ChallengeSigningKeys} for the kid-based rotation contract.
+   */
+  signingKeys: ChallengeSigningKeys;
+  /**
+   * Default `['ES256','EdDSA','RS256']`. Order = preference. EdDSA precedes
+   * RS256 because Ed25519 keys are ~32 B vs RSA 256+ B; RS256 is kept last
+   * mainly for Windows Hello compatibility.
+   */
   pubKeyCredAlgs?: ReadonlyArray<CoseAlgName>;
-  /** 'preferred' | 'required' | 'discouraged'. Default 'preferred'. */
+  /**
+   * Default `'required'`. The library targets fintech/healthcare audiences
+   * where NIST AAL3 / PSD2 SCA require user verification on every ceremony.
+   * Consumer-grade flows can opt down to `'preferred'` explicitly. The default
+   * is part of the v0.1 stability contract (see Appendix C).
+   */
   userVerification?: UserVerificationRequirement;
   /** 'preferred' | 'required' | 'discouraged'. Default 'preferred' (resident key). */
   residentKey?: ResidentKeyRequirement;
@@ -321,14 +362,28 @@ export interface GenerateRegistrationInput<TUserId extends string> {
   timeout?: number;
   /** Default 'none'. */
   attestation?: 'none' | 'indirect' | 'direct' | 'enterprise';
-  /** Optional secret for the stateless `session` envelope. Defaults to PASSKEY_SESSION_SECRET env var. */
-  sessionSecret?: string | Uint8Array;
 }
 ```
 
 ```ts
 /**
- * Verify the attestation produced by the browser's {@link register}.
+ * Caller-supplied signing keys for the challenge envelope. The active key
+ * signs new envelopes; the verifier accepts any key whose `kid` matches.
+ *
+ * Rotation: introduce a new key in `previous` first to let in-flight challenges
+ * verify against either, swap to `active` on the next deploy, and drop the old
+ * key from `previous` once the TTL has elapsed (default 5 min). This prevents
+ * the orphaned-in-flight-ceremony bug that single-secret rotations cause.
+ */
+export interface ChallengeSigningKeys {
+  active: { kid: string; secret: string | Uint8Array };
+  previous?: ReadonlyArray<{ kid: string; secret: string | Uint8Array }>;
+}
+```
+
+```ts
+/**
+ * Verify the attestation produced by the browser's {@link startRegistration}.
  *
  * On success, returns the new {@link CredentialRecord} ready for storage.
  * The store is NOT written automatically — call `store.create(record)` from
@@ -338,9 +393,10 @@ export interface GenerateRegistrationInput<TUserId extends string> {
  * @example
  * const record = await verifyRegistration({
  *   response: req.body,
- *   session: getCookie('passkey_reg')!,
+ *   challengeToken: getCookie('passkey_reg')!,
  *   expectedOrigin: 'https://example.com',
  *   expectedRpId: 'example.com',
+ *   signingKeys: PASSKEY_SIGNING_KEYS,
  * });
  * await store.create({ ...record, userId: req.user.id });
  */
@@ -350,15 +406,15 @@ export function verifyRegistration(
 
 export interface VerifyRegistrationInput {
   response: RegistrationResponseJSON;
-  session: SessionToken;
+  challengeToken: ChallengeToken;
   expectedOrigin: string | readonly string[];
   expectedRpId: string;
+  signingKeys: ChallengeSigningKeys;
   /** Default true. Set false ONLY to integrate with non-https dev. */
   requireUserVerification?: boolean;
-  sessionSecret?: string | Uint8Array;
   /** Hook fired after verification but before return — log/audit here. */
   onVerified?: (ev: RegistrationVerifiedEvent) => void | Promise<void>;
-  /** Optional AAGUID allow/deny policy. */
+  /** Optional AAGUID allow/deny policy. See {@link AaguidPolicy}. */
   policy?: AaguidPolicy;
 }
 ```
@@ -367,16 +423,17 @@ export interface VerifyRegistrationInput {
 /** Mirror of generate/verify Registration for the authentication ceremony. */
 export function generateAuthenticationOptions<TUserId extends string>(
   input: GenerateAuthenticationInput<TUserId>,
-): Promise<{ options: AuthenticationOptionsJSON; session: SessionToken }>;
+): Promise<{ options: AuthenticationOptionsJSON; challengeToken: ChallengeToken }>;
 
 export interface GenerateAuthenticationInput<TUserId extends string> {
   rp: { id: string };
   /** Omit for discoverable / passkey-first flows (no allowCredentials). */
   user?: { id: TUserId };
   store: CredentialStore<TUserId>;
+  signingKeys: ChallengeSigningKeys;
+  /** Default `'required'`. See {@link GenerateRegistrationInput.userVerification}. */
   userVerification?: UserVerificationRequirement;
   timeout?: number;
-  sessionSecret?: string | Uint8Array;
 }
 
 export function verifyAuthentication<TUserId extends string>(
@@ -385,12 +442,12 @@ export function verifyAuthentication<TUserId extends string>(
 
 export interface VerifyAuthenticationInput<TUserId extends string> {
   response: AuthenticationResponseJSON;
-  session: SessionToken;
+  challengeToken: ChallengeToken;
   expectedOrigin: string | readonly string[];
   expectedRpId: string;
   store: CredentialStore<TUserId>;
+  signingKeys: ChallengeSigningKeys;
   requireUserVerification?: boolean;
-  sessionSecret?: string | Uint8Array;
   onVerified?: (ev: AuthenticationVerifiedEvent<TUserId>) => void | Promise<void>;
 }
 
@@ -406,6 +463,51 @@ export interface VerifiedAuthentication<TUserId extends string> {
 }
 ```
 
+```ts
+/**
+ * AAGUID allow/deny policy for enterprise mode. `mode` defaults to
+ * `'allowlist'` when `allow` is set and `'denylist'` when only `deny` is set.
+ * If both are provided, `deny` is evaluated first (deny-wins precedence).
+ *
+ * AAGUIDs that are not in either list are accepted in `'denylist'` mode and
+ * rejected in `'allowlist'` mode. The empty AAGUID `00000000-0000-0000-0000-000000000000`
+ * (returned by attestation `'none'`) is treated as a special bucket — set
+ * `allowAnonymous: true` to permit it under `'allowlist'`.
+ */
+export interface AaguidPolicy {
+  mode?: 'allowlist' | 'denylist';
+  allow?: ReadonlyArray<AaguidString>;
+  deny?: ReadonlyArray<AaguidString>;
+  allowAnonymous?: boolean;
+}
+
+/** Audit/logging payload fired by `verifyRegistration.onVerified`. */
+export interface RegistrationVerifiedEvent {
+  credentialId: Base64Url;
+  aaguid: AaguidString;
+  attestationFormat: AttestationFormat;
+  transports: ReadonlyArray<AuthenticatorTransport>;
+  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean };
+  /** Whether the credential is sync-eligible (BE bit). */
+  backupEligible: boolean;
+  /** Whether the credential is currently synced/backed up (BS bit). */
+  backupState: boolean;
+  /** Derived from BE: 'multiDevice' if BE=1, else 'singleDevice'. */
+  deviceType: 'singleDevice' | 'multiDevice';
+}
+
+/** Audit/logging payload fired by `verifyAuthentication.onVerified`. */
+export interface AuthenticationVerifiedEvent<TUserId extends string> {
+  userId: TUserId;
+  credentialId: Base64Url;
+  /** Strictly-greater counter value, or 0 when the authenticator is signCountStatic. */
+  newCounter: number;
+  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean };
+  /** True when the stored BS bit just flipped 0→1 (credential just got backed up). */
+  newlyBackedUp: boolean;
+}
+```
+
 ### 2.3 Storage contract — `@authkit/passkeys/storage/*`
 
 ```ts
@@ -418,21 +520,103 @@ export interface VerifiedAuthentication<TUserId extends string> {
 export interface CredentialStore<TUserId extends string = string> {
   /** Persist a freshly registered credential. */
   create(record: NewCredentialRecord<TUserId>): Promise<CredentialRecord<TUserId>>;
-  /** Look up by credential ID — used during verifyAuthentication. */
+  /**
+   * Look up by credential ID — used during verifyAuthentication.
+   * MUST run with a constant-time comparison shape: returning `null` and
+   * returning a record whose signature later fails verification must be
+   * indistinguishable to the caller (see §9.10 / §5.6 for the rationale).
+   */
   findByCredentialId(credentialId: Base64Url): Promise<CredentialRecord<TUserId> | null>;
   /** All credentials for a user — used to populate excludeCredentials. */
   listByUserId(userId: TUserId): Promise<ReadonlyArray<CredentialRecord<TUserId>>>;
   /** Bump the signature counter post-authentication. MUST be atomic per credential. */
   updateCounter(credentialId: Base64Url, newCounter: number): Promise<void>;
+  /** Persist BE/BS state changes after a sync flip (see §9.6). MUST be atomic. */
+  updateBackupState(credentialId: Base64Url, backupState: boolean): Promise<void>;
   /** Delete by credential ID — used by /settings UIs. */
   deleteByCredentialId(credentialId: Base64Url): Promise<void>;
 }
+```
 
+```ts
+/** The persisted credential shape. Branded with the caller's `TUserId`. */
+export interface CredentialRecord<TUserId extends string = string> {
+  /** WebAuthn credential ID, base64url-encoded. */
+  credentialId: Base64Url;
+  /** Owner of this credential. */
+  userId: TUserId;
+  /**
+   * Stored COSE public key, base64url-encoded.
+   * Decoded internally via `parseCoseKey` for verification — the SQL column is opaque.
+   */
+  publicKey: Base64Url;
+  /** Authenticator model identifier (16-byte UUID, dashed). */
+  aaguid: AaguidString;
+  /** Last observed signature counter. 0 is legitimate for sync passkeys (§9.6). */
+  counter: number;
+  /**
+   * Authenticator-reported transports (`internal`, `hybrid`, `usb`, `nfc`, `ble`).
+   * Used to populate `allowCredentials.transports` on subsequent auth ceremonies
+   * to pick the right UI prompt.
+   */
+  transports: ReadonlyArray<AuthenticatorTransport>;
+  /** BE bit — this credential CAN be backed up / synced (multi-device). */
+  backupEligible: boolean;
+  /** BS bit — this credential IS currently backed up. Mutates over a credential's lifetime. */
+  backupState: boolean;
+  /** Derived from `backupEligible`. Stored explicitly so DB queries don't recompute. */
+  deviceType: 'singleDevice' | 'multiDevice';
+  /** First successful registration timestamp (epoch ms). */
+  createdAt: number;
+  /** Last successful authentication timestamp (epoch ms). */
+  lastUsedAt: number | null;
+}
+
+/** What `verifyRegistration` returns; `userId` is provided by the caller before persisting. */
+export type NewCredentialRecord<TUserId extends string = string> =
+  Omit<CredentialRecord<TUserId>, 'userId' | 'createdAt' | 'lastUsedAt'> & {
+    /** Caller fills this in before passing to `store.create`. */
+    userId?: TUserId;
+  };
+```
+
+```ts
 /** Reference adapters: */
 export function createMemoryCredentialStore<TUserId extends string = string>(): CredentialStore<TUserId>;
-export function createPrismaCredentialStore<TUserId extends string = string>(opts: { prisma: PrismaClientLike; model?: string }): CredentialStore<TUserId>;
-export function createDrizzleCredentialStore<TUserId extends string = string>(opts: { db: DrizzleDb; table: AnyPgTable | AnyMySqlTable | AnySqliteTable }): CredentialStore<TUserId>;
-export function createKyselyCredentialStore<TUserId extends string = string>(opts: { db: Kysely<any>; table: string }): CredentialStore<TUserId>;
+
+/**
+ * Prisma adapter. Pass the typed model delegate (e.g. `prisma.passkeyCredential`)
+ * directly so call sites are checked against the schema — a stringly-typed
+ * model name is rejected because schema renames silently break runtime lookup.
+ */
+export function createPrismaCredentialStore<TDelegate extends PrismaCredentialDelegate, TUserId extends string = string>(
+  opts: { delegate: TDelegate },
+): CredentialStore<TUserId>;
+
+/**
+ * Drizzle adapters — one per dialect, because Postgres/MySQL/SQLite diverge
+ * on column types (`bytea` vs `BLOB` vs `BLOB`). The dialect-specific factory
+ * statically rejects a Postgres table passed to the SQLite adapter.
+ */
+export function createDrizzlePgCredentialStore<TUserId extends string = string>(
+  opts: { db: PgDatabase<any, any>; table: PgTableWithColumns<PasskeyCredentialPgColumns> },
+): CredentialStore<TUserId>;
+export function createDrizzleMySqlCredentialStore<TUserId extends string = string>(
+  opts: { db: MySqlDatabase<any, any>; table: MySqlTableWithColumns<PasskeyCredentialMySqlColumns> },
+): CredentialStore<TUserId>;
+export function createDrizzleSqliteCredentialStore<TUserId extends string = string>(
+  opts: { db: BaseSQLiteDatabase<any, any>; table: SQLiteTableWithColumns<PasskeyCredentialSqliteColumns> },
+): CredentialStore<TUserId>;
+
+/**
+ * Kysely adapter. The DB schema generic is preserved so the table reference
+ * is checked against the schema at compile time — `table` must be a key of
+ * `DB` whose row shape extends {@link PasskeyCredentialRow}.
+ */
+export function createKyselyCredentialStore<
+  DB extends Record<string, PasskeyCredentialRow>,
+  TUserId extends string = string,
+>(opts: { db: Kysely<DB>; table: keyof DB & string }): CredentialStore<TUserId>;
 ```
 
 ### 2.4 React bindings — `@authkit/passkeys/react`
@@ -443,10 +627,10 @@ export function createKyselyCredentialStore<TUserId extends string = string>(opt
  *
  * @example
  * const { register, authenticate, status, error } = usePasskey({
- *   registerOptionsUrl: '/api/passkey/register/options',
- *   registerVerifyUrl:  '/api/passkey/register/verify',
- *   loginOptionsUrl:    '/api/passkey/login/options',
- *   loginVerifyUrl:     '/api/passkey/login/verify',
+ *   register:     { optionsUrl: '/api/passkey/register/options', verifyUrl: '/api/passkey/register/verify' },
+ *   authenticate: { optionsUrl: '/api/passkey/login/options',    verifyUrl: '/api/passkey/login/verify' },
+ *   onFallback:   (err) => router.push(`/login?fallback=${err.code}`),
+ *   headers:      () => ({ authorization: `Bearer ${getToken()}` }),
  * });
  *
  * <button disabled={status === 'pending'} onClick={register}>Register passkey</button>
@@ -454,11 +638,26 @@ export function createKyselyCredentialStore<TUserId extends string = string>(opt
  */
 export function usePasskey(opts: UsePasskeyOptions): UsePasskeyResult;
 
+export interface UsePasskeyOptions {
+  register: { optionsUrl: string; verifyUrl: string };
+  authenticate: { optionsUrl: string; verifyUrl: string };
+  /**
+   * Notification hook fired when register/authenticate rejects. Same semantics
+   * as the underlying browser API: side-effect only, the error is always
+   * surfaced via `error` and the returned promise still rejects.
+   */
+  onFallback?: (err: PasskeyError) => void | Promise<void>;
+  /** Custom fetch implementation. Defaults to global `fetch`. */
+  fetcher?: typeof fetch;
+  /** Static headers or a (re-)evaluated callback for JWT/CSRF tokens. */
+  headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
+}
+
 export type UsePasskeyStatus = 'idle' | 'pending' | 'success' | 'error';
 
 export interface UsePasskeyResult {
   register(): Promise<void>;
-  authenticate(opts?: { mediation?: 'conditional' | 'optional' }): Promise<void>;
+  authenticate(opts?: { mediation?: 'conditional' | 'optional' | 'required' }): Promise<void>;
   status: UsePasskeyStatus;
   error: PasskeyError | null;
   reset(): void;
@@ -472,12 +671,25 @@ export function PasskeyButton(props: PasskeyButtonProps): JSX.Element;
 export interface PasskeyButtonProps {
   mode: 'register' | 'authenticate';
   endpoints: { optionsUrl: string; verifyUrl: string };
+  /** Custom fetch implementation. Defaults to global `fetch`. */
+  fetcher?: typeof fetch;
+  /**
+   * Static headers or a (re-)evaluated callback. Required for any app that
+   * authenticates the options/verify endpoints with a Bearer token, CSRF
+   * header, or non-default cookie credentials mode.
+   */
+  headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
   onSuccess?: () => void;
   onError?: (err: PasskeyError) => void;
   children?: React.ReactNode;
   className?: string;
 }
 ```
+
+The same `onFallback` pattern is documented for non-React adapters: each
+adapter's `verify*` route handler accepts an `onError` config that receives
+the typed `PasskeyError` so server-side fallback logging / redirect headers
+work the same way across Hono / Express / Fastify / Next.
 
 ### 2.5 Adapters — `@authkit/passkeys/adapters/*`
 
@@ -512,19 +724,20 @@ export type PasskeyErrorCode =
   | 'not_supported'
   | 'user_cancelled'
   | 'timeout'
-  | 'invalid_state'              // credential already registered
-  | 'security_error'             // RP-ID / origin mismatch on browser side
-  | 'invalid_session'            // signed envelope invalid/expired/replayed
-  | 'invalid_challenge'          // challenge in clientDataJSON ≠ expected
+  | 'invalid_state'                  // credential already registered
+  | 'security_error'                 // RP-ID / origin mismatch on browser side
+  | 'invalid_challenge_token'        // signed envelope invalid/expired/replayed
+  | 'wrong_ceremony'                 // envelope was for the other ceremony (reg vs auth)
+  | 'invalid_challenge'              // challenge in clientDataJSON ≠ expected
   | 'invalid_origin'
   | 'invalid_rp_id'
-  | 'invalid_signature'
+  | 'authentication_failed'          // public boundary — covers credential_not_found + invalid_signature
   | 'invalid_attestation'
   | 'unsupported_algorithm'
-  | 'counter_regression'         // possible cloned authenticator
+  | 'unsupported_attestation_format' // attestation fmt not loaded (apple/fido-u2f are dynamic, see §6)
+  | 'counter_regression'             // possible cloned authenticator
   | 'user_verification_required'
   | 'aaguid_not_allowed'
-  | 'credential_not_found'
   | 'storage_error'
   | 'internal_error';
 
@@ -540,11 +753,18 @@ export function isPasskeyError(e: unknown): e is PasskeyError;
 /** Concrete subclasses ship for instanceof use, all extending PasskeyError. */
 export class NotSupportedError extends PasskeyError {}
 export class UserCancelledError extends PasskeyError {}
-export class InvalidSessionError extends PasskeyError {}
-export class InvalidSignatureError extends PasskeyError {}
+export class InvalidChallengeTokenError extends PasskeyError {}
+export class WrongCeremonyError extends PasskeyError {}
+export class AuthenticationFailedError extends PasskeyError {}
 export class CounterRegressionError extends PasskeyError {}
 // …one per code.
 ```
+
+`authentication_failed` deliberately collapses two internally-distinct
+failures — credential lookup miss and signature mismatch — into a single
+public code so the error path does not become a credential-ID enumeration
+oracle. The granular reason is logged via `onVerified` / server logs only;
+it never reaches the browser. See §5.6 and §9.10.
 
 ---
 
@@ -563,8 +783,8 @@ export class CounterRegressionError extends PasskeyError {}
                 ▼                      ▼                      ▼
          ┌────────────┐         ┌────────────┐         ┌────────────┐
          │  browser/  │         │   server/  │         │  errors/   │
-         │ register   │         │ generate*  │         │            │
-         │ authn      │         │ verify*    │         │            │
+         │ startReg   │         │ generate*  │         │            │
+         │ startAuthn │         │ verify*    │         │            │
          │ feat-detect│         │ challenge  │         │            │
          └─────┬──────┘         │ attestation│         └─────┬──────┘
                │                │ policy     │               │
@@ -589,7 +809,10 @@ export class CounterRegressionError extends PasskeyError {}
 
 Rules enforced at build time via ESLint `no-restricted-imports`:
 
-- `core/` is the only module that may not import anything outside itself.
+- `errors/` is a true leaf — it MUST NOT import from any other top-level module
+  (not even `core/`). It depends only on stdlib `Error`. This is what lets
+  every other module import `errors/` freely without breaking the layering.
+- `core/` may import only from `errors/` and `types/`.
 - `browser/` may import only from `core/`, `errors/`, `types/`.
 - `server/` may import only from `core/`, `errors/`, `types/`, `storage/types`.
 - `adapters/*` may import only from `server/`, `errors/`, `types/` and the named framework peer dep.
@@ -605,18 +828,18 @@ Rules enforced at build time via ESLint `no-restricted-imports`:
                                            generateRegistrationOptions()
                                              ├─ store.listByUserId(userId)
                                              ├─ randomBytes(32) → challenge
-                                             ├─ HMAC-sign session envelope
-                                             └─ return { options, session }
+                                             ├─ HMAC-sign challenge envelope (active key)
+                                             └─ return { options, challengeToken }
                                                        │
-   register(options)  ◄────────────────────────────────┘
+   startRegistration(options)  ◄───────────────────────┘
      │
      ├─ parseCreationOptionsFromJSON()
      ├─ navigator.credentials.create()
      └─ normalize → JSON
               │
               ▼
-                                           verifyRegistration({ response, session })
-                                             ├─ verifySession(session) → challenge
+                                           verifyRegistration({ response, challengeToken })
+                                             ├─ verifyChallengeToken(token) → { challenge, ceremony, kid }
                                              ├─ assertClientData(origin, type, challenge)
                                              ├─ parseAuthenticatorData()
                                              │   ├─ decodeFlags()
@@ -633,9 +856,9 @@ Rules enforced at build time via ESLint `no-restricted-imports`:
 ### 3.3 Key design patterns
 
 - **Hexagonal core / adapter shell.** `core/` is pure logic; `storage/` defines a port; `adapters/` are inbound HTTP shells. Swapping framework or DB never touches verification code.
-- **Strategy for attestation formats.** A registry keyed on attestation `fmt` resolves to the right verifier (`packed`, `none`, `fido-u2f`, `apple`). Stretch formats (`tpm`, `android-key`) live behind dynamic imports so they never ship in the default bundle.
-- **Stateless session envelope.** Challenges are HMAC-SHA-256 signed (`{challenge,userId?,createdAt} | tag`). Server stays stateless; works on edge functions with no KV. Replay window enforced by `createdAt + ttl`.
-- **Result-shaped failure for known business outcomes; thrown errors for programmer/spec violations.** `verifyAuthentication` *throws* on invalid signatures (genuine errors); `register` *throws* on user cancel but exposes the typed code so the caller can branch (and a sugar `onFallback` hook turns it back into a callback).
+- **Strategy for attestation formats.** A registry keyed on attestation `fmt` resolves to the right verifier. Only `none` and `packed` ship in the default bundle. `apple`, `fido-u2f`, `tpm`, and `android-key` live behind dynamic imports — the registry returns a thunk that lazy-imports the format module on first use, so cold-start workloads that only ever see `packed` never pay the cost.
+- **Stateless challenge envelope.** Challenges are HMAC-SHA-256 signed (`{ challenge, ceremony, kid, iat, userId? } | tag`). Server stays stateless; works on edge functions with no KV. Replay window enforced by `iat + ttl`. Ceremony binding (`'reg'` vs `'auth'`) prevents cross-ceremony replay; `kid` enables overlapping-window key rotation (see §9.5).
+- **Thrown typed errors for both spec violations and ceremony cancellations.** `verifyAuthentication` *throws* on invalid signatures and on credential-not-found (both flatten to `authentication_failed` at the public boundary, see §5.6). `startRegistration` *throws* on user cancel but exposes the typed code so the caller can branch — the `onFallback` hook is a side-effect notification, not a swallow.
 - **Branded base64url type.** `type Base64Url = string & { __brand: 'Base64Url' }` prevents accidentally mixing raw and encoded strings at compile time.
 - **Discriminated unions everywhere.** Attestation responses, error events, ceremony states all use `kind:` discriminants; switch statements get exhaustiveness checks via `assertNever`.
 
@@ -652,11 +875,23 @@ export type Base64Url = string & { readonly [__base64Url]: void };
 declare const __aaguid: unique symbol;
 export type AaguidString = string & { readonly [__aaguid]: void }; // "xxxxxxxx-xxxx-…"
 
-declare const __sessionToken: unique symbol;
-export type SessionToken = string & { readonly [__sessionToken]: void };
+declare const __challengeToken: unique symbol;
+/**
+ * Short-lived signed envelope passed between `generate*Options` and `verify*`.
+ * Named `ChallengeToken` (NOT `SessionToken`) because "session" is universally
+ * taken in auth land for the authenticated-user session. This token has nothing
+ * to do with that — it is a stateless, ceremony-scoped HMAC envelope.
+ */
+export type ChallengeToken = string & { readonly [__challengeToken]: void };
 ```
 
-These prevent confusion between “base64url string” and “raw string” in function signatures. Constructors live in `core/encoding/base64url.ts` and are the only sanctioned way to mint a `Base64Url`.
+These prevent confusion between "base64url string" and "raw string" in function
+signatures. Constructors are validating: `Base64Url` is minted only by
+`toBase64Url(Uint8Array)` (encoder) or `assertBase64Url(string)` (validator
+that runs the alphabet/length check before the structural cast). A bare
+`s as Base64Url` cast is forbidden by ESLint. The same rule applies to
+`AaguidString` (must match the dashed-UUID pattern) and `ChallengeToken`
+(must HMAC-verify against the configured signing keys before the cast lands).
 
 ### 4.2 Discriminated unions
 
@@ -671,8 +906,25 @@ export type RegistrationResponseJSON = {
     transports?: ReadonlyArray<AuthenticatorTransport>;
   };
   authenticatorAttachment?: AuthenticatorAttachment | null;
-  clientExtensionResults: AuthenticationExtensionsClientOutputsJSON;
+  /**
+   * Locally-defined to avoid leaking `lib.dom.d.ts`'s
+   * `AuthenticationExtensionsClientOutputsJSON` into a server module that
+   * runs on Workers / Vercel Edge / Deno without the DOM lib. Every public
+   * field on every `*ResponseJSON` / `*OptionsJSON` shape is audited for
+   * the same DOM leakage.
+   */
+  clientExtensionResults: PasskeyExtensionResultsJSON;
 };
+
+/** Locally-defined mirror of the WebAuthn-JSON extension-results shape. */
+export interface PasskeyExtensionResultsJSON {
+  appid?: boolean;
+  appidExclude?: boolean;
+  credProps?: { rk?: boolean };
+  largeBlob?: { supported?: boolean; blob?: Base64Url; written?: boolean };
+  prf?: { enabled?: boolean; results?: { first?: Base64Url; second?: Base64Url } };
+  // intentionally narrow — only extensions the library actually plumbs through.
+}
 
 export type AttestationFormat = 'none' | 'packed' | 'fido-u2f' | 'apple' | 'tpm' | 'android-key';
 
@@ -716,7 +968,7 @@ await generateRegistrationOptions({ rp, user: { id: rawString }, store });
 
 ### 5.1 When to throw vs return Result
 
-- **Throw** when a precondition is wrong, the spec says "fail", or a programmer mistake is the most likely cause: invalid signature, RP-ID mismatch, replayed session, counter regression, missing required option. The caller cannot recover by inspecting return shape.
+- **Throw** when a precondition is wrong, the spec says "fail", or a programmer mistake is the most likely cause: invalid signature, RP-ID mismatch, replayed challenge token, wrong-ceremony token, counter regression, missing required option. The caller cannot recover by inspecting return shape.
 - **Throw with a typed code** (rather than return) for ceremony cancellations (`user_cancelled`, `timeout`, `not_supported`) because these are also exceptional control flow but the caller may want to branch — the typed `code` makes that easy without a Result type.
 - **Return a value** from queries (`store.findByCredentialId` returns `… | null`) and feature detection (`isPasskeySupported`).
 
@@ -731,17 +983,18 @@ PasskeyError (abstract base)
 ├── TimeoutError                       code: 'timeout'
 ├── InvalidStateError                  code: 'invalid_state'
 ├── SecurityError                      code: 'security_error'
-├── InvalidSessionError                code: 'invalid_session'
+├── InvalidChallengeTokenError         code: 'invalid_challenge_token'
+├── WrongCeremonyError                 code: 'wrong_ceremony'
 ├── InvalidChallengeError              code: 'invalid_challenge'
 ├── InvalidOriginError                 code: 'invalid_origin'
 ├── InvalidRpIdError                   code: 'invalid_rp_id'
-├── InvalidSignatureError              code: 'invalid_signature'
+├── AuthenticationFailedError          code: 'authentication_failed'
 ├── InvalidAttestationError            code: 'invalid_attestation'
 ├── UnsupportedAlgorithmError          code: 'unsupported_algorithm'
+├── UnsupportedAttestationFormatError  code: 'unsupported_attestation_format'
 ├── CounterRegressionError             code: 'counter_regression'
 ├── UserVerificationRequiredError      code: 'user_verification_required'
 ├── AaguidNotAllowedError              code: 'aaguid_not_allowed'
-├── CredentialNotFoundError            code: 'credential_not_found'
 ├── StorageError                       code: 'storage_error'
 └── InternalError                      code: 'internal_error'
 ```
@@ -767,18 +1020,46 @@ The original error is always preserved in `.cause` for server-side logging, but 
 
 ### 5.5 The `onFallback` hook
 
-A single sugar hook on `register` / `authenticate` lets callers degrade gracefully:
+A single notification hook on `startRegistration` / `startAuthentication` lets
+callers branch on the typed error code without a try/catch wrapper for the
+common "log and redirect to password flow" path. The hook is **fire-and-forget**:
+the underlying promise still rejects with the typed `PasskeyError`, so callers
+who want to swallow the rejection wrap the call in try/catch themselves. This
+contract is intentionally simple — earlier drafts had the hook return `true`
+to swallow, which produced subtle bugs whenever readers wrote
+`onFallback: (err) => router.push(…)` and accidentally relied on the side-effect
+return for control flow.
 
 ```ts
-await authenticate(opts, {
-  onFallback: (err) => {
-    if (err.code === 'not_supported' || err.code === 'user_cancelled') {
-      router.push('/login/password');
-      return true; // swallow
-    }
-  },
-});
+try {
+  await startAuthentication(opts, {
+    onFallback: (err) => {
+      logger.warn({ code: err.code }, 'passkey ceremony failed');
+      if (err.code === 'not_supported' || err.code === 'user_cancelled') router.push('/login/password');
+    },
+  });
+} catch {
+  // already routed; swallow.
+}
 ```
+
+### 5.6 Timing & enumeration safety
+
+The library treats credential-ID enumeration as a real attack. Three concrete
+rules follow from that:
+
+- **Single public failure code for the auth path.** `findByCredentialId` returning
+  `null` and the COSE-key signature verifying to `false` both surface as
+  `authentication_failed`. Internally the two paths take comparable time
+  (the `null` branch still runs a constant-time HMAC over a synthetic
+  challenge so the request duration matches the verifying branch within
+  jitter — see §9.14).
+- **Constant-time HMAC compare for the challenge envelope.** `verifyChallengeToken`
+  uses `crypto.subtle.verify` (HMAC) which is constant-time over the key+message,
+  not a `===` over base64url strings.
+- **`PasskeyError.toJSON()` never includes `cause` or stack.** The on-the-wire
+  shape is exactly `{ code, message }` and `message` is always a static string —
+  no template-interpolated user input or DB error text. See §9.14.
 
 ---
 
@@ -790,16 +1071,33 @@ await authenticate(opts, {
 |----------------------------------|--------------------|-------------------|-------------|
 | `.`                              | Type re-exports + `version()` | n/a (types) | <1 KB |
 | `/browser`                       | Frontend           | yes               | **6 KB**   |
-| `/server`                        | Backend (Node)     | yes               | **12 KB**  |
+| `/server` (default bundle: `none` + `packed`) | Backend (Node) | yes | **12 KB** |
 | `/server` (edge condition)       | Backend (edge)     | yes               | **12 KB**  |
+| `/server` + `apple` (dynamic)    | Backend            | dyn-imported      | +6 KB      |
+| `/server` + `fido-u2f` (dynamic) | Backend            | dyn-imported      | +2 KB      |
+| `/server` + `tpm` (dynamic)      | Backend            | dyn-imported      | +12 KB     |
+| `/server` + `android-key` (dyn.) | Backend            | dyn-imported      | +8 KB      |
 | `/errors`                        | Both               | yes               | 1.5 KB     |
 | `/types`                         | TS only            | n/a               | 0          |
 | `/react`                         | Frontend           | yes               | 3 KB       |
 | `/vue`                           | Frontend           | yes               | 3 KB       |
 | `/sveltekit`                     | SSR                | yes               | 2 KB       |
 | `/adapters/{next,hono,express,fastify,nestjs,trpc}` | Backend | yes | <2 KB each over /server |
-| `/storage/{memory,prisma,drizzle,kysely}`           | Backend | yes | <1 KB each |
+| `/storage/{memory,prisma,drizzle-pg,drizzle-mysql,drizzle-sqlite,kysely}` | Backend | yes | <1 KB each |
 | `/mds`                           | Enterprise         | yes               | 5 KB       |
+
+**Headline marketing claim:** the **client core** is **<6 KB gzipped**; the
+**default server bundle** (challenge envelope + `none` + `packed` attestation +
+COSE/CBOR + verifier dispatcher) is **<12 KB gzipped**. The research report's
+single `target_bundle_size_kb: 10` is the *client*-side number and the README
+banner pins it to that scope explicitly so a Worker bundle landing at 12 KB
+does not contradict marketing. `apple`, `fido-u2f`, `tpm`, and `android-key`
+are dynamic imports — they are loaded only on first verification of an
+attestation with that `fmt`, so the default cold start is unaffected. The
+Apple X.509 SPKI / Nonce-extension work that would otherwise have forced an
+ASN.1 parser into the default bundle lives entirely inside `apple.ts` and is
+implemented with a hand-rolled, narrow ASN.1 SEQUENCE walker (no `asn1js`),
+described in §6.4.
 
 ### 6.2 How tree-shaking is preserved
 
@@ -812,9 +1110,46 @@ await authenticate(opts, {
 
 ### 6.3 Conditional exports for runtimes
 
-The `server` and `adapters/{next,hono}` entries declare `workerd`, `edge-light`, `deno`, `browser` conditions that resolve to a dedicated `index.edge.js`. The edge variant excludes any `node:*` import — verified by a unit test that scans the edge bundle for the `node:` substring.
+The `server` and `adapters/{next,hono}` entries declare `workerd`, `edge-light`,
+`deno`, `browser` conditions that resolve to a dedicated `index.edge.js`. The
+edge variant excludes any `node:*` import — verified by a unit test that scans
+the edge bundle for the `node:` substring (and a second test that boots the
+bundle inside `@edge-runtime/vm` and runs a registration round-trip).
 
-### 6.4 Why we don't depend on `@noble/hashes` / `@noble/curves` in the published bundle
+The `node:crypto` polyfill story is wired entirely through the package-export
+conditions, **never** via `typeof process` runtime guards (which esbuild-style
+bundlers still inline the `node:crypto` import for, breaking the Worker
+bundle). Concretely:
+
+- `core/crypto/verify.ts` imports from `./webcrypto-shim`.
+- `core/crypto/webcrypto-shim.ts` is the default file: `export const subtle = globalThis.crypto.subtle;`.
+- `package.json` adds an `"imports"` map for the in-package `#webcrypto-shim`
+  alias with conditions: `"workerd"`, `"edge-light"`, `"deno"`, `"browser"`,
+  `"default"` → `./dist/core/crypto/webcrypto-shim.js`; `"node"` →
+  `./dist/core/crypto/webcrypto-shim.node.js`.
+- The `webcrypto-shim.node.js` file is the *only* file that does
+  `import { webcrypto } from 'node:crypto'`, and the export-conditions
+  guarantee no other runtime ever resolves to it.
+
+### 6.4 Apple attestation ASN.1 work without `asn1js`
+
+The Apple anonymous attestation format requires extracting the SubjectPublicKeyInfo
+from an X.509 leaf certificate and reading a specific OID-tagged extension whose
+OCTET STRING content is the SHA-256 of the WebAuthn auth-data + clientDataJSON.
+A general-purpose ASN.1 parser is overkill — every byte we need lives at a fixed
+TLV offset for X.509-formatted certs. `apple.ts` ships a ~600-byte hand-rolled
+walker that:
+
+- Parses only DER (not BER) — well-formed X.509 certs are always DER.
+- Walks `SEQUENCE → SEQUENCE → context-specific [3]` to reach the extensions list, comparing OID byte-for-byte against the known Apple-anonymous OID rather than parsing OIDs into tuples.
+- Pulls `SPKI` as a raw byte slice and hands it to `crypto.subtle.importKey('spki', …)` — WebCrypto does the actual key parsing.
+- Validates leaf-issued-by-Apple-WebAuthn-Root via `crypto.subtle.verify` against a hard-coded root SPKI; chain-length is fixed so we don't need a generic chain resolver.
+
+Because this code only runs when an Apple attestation actually arrives (dynamic
+import, see §3.4), the cost stays out of the default bundle. `tpm` and
+`android-key` use the same playbook with their respective fixed structures.
+
+### 6.5 Why we don't depend on `@noble/hashes` / `@noble/curves` in the published bundle
 
 The research report initially listed `@noble/hashes` and `@noble/curves` as candidate runtime deps. After a deeper look at WebCrypto coverage:
 
@@ -849,7 +1184,7 @@ All optional, all widely held:
 | `@trpc/server`  | `>=11`        | `/adapters/trpc`     |
 | `@sveltejs/kit` | `>=2`         | `/sveltekit`         |
 | `@prisma/client`| `>=5`         | `/storage/prisma`    |
-| `drizzle-orm`   | `>=0.30`      | `/storage/drizzle`   |
+| `drizzle-orm`   | `>=0.30`      | `/storage/drizzle-pg`, `/storage/drizzle-mysql`, `/storage/drizzle-sqlite` |
 | `kysely`        | `>=0.27`      | `/storage/kysely`    |
 
 Every entry above is in `peerDependenciesMeta` with `optional: true`. Installing `@authkit/passkeys` does not pull any of them. Each adapter's source uses `import type` for framework types so the build artefact has zero runtime references to the framework — typecheck-only coupling.
@@ -929,7 +1264,9 @@ export default defineConfig({
     'sveltekit/index': 'src/sveltekit/index.ts',
     'storage/memory': 'src/storage/memory.ts',
     'storage/prisma': 'src/storage/prisma.ts',
-    'storage/drizzle': 'src/storage/drizzle.ts',
+    'storage/drizzle-pg': 'src/storage/drizzle-pg.ts',
+    'storage/drizzle-mysql': 'src/storage/drizzle-mysql.ts',
+    'storage/drizzle-sqlite': 'src/storage/drizzle-sqlite.ts',
     'storage/kysely': 'src/storage/kysely.ts',
     'adapters/next/index': 'src/adapters/next/index.ts',
     'adapters/hono/index': 'src/adapters/hono/index.ts',
@@ -1002,7 +1339,7 @@ The implementation must explicitly handle every item below; each gets at least o
 - WebAuthn ships ECDSA signatures as **DER**; WebCrypto's `verify` expects **raw r||s**. The DER-to-raw converter must handle:
   - `r` or `s` with a leading zero byte (added because the high bit was set).
   - `r` or `s` shorter than the curve size (left-pad with zeros).
-  - Invalid DER length tags — throw `InvalidSignatureError`.
+  - Invalid DER length tags — throw `AuthenticationFailedError` (or `InvalidAttestationError` during registration). Malformed signatures collapse to the same public boundary code as a verifying-but-incorrect signature so they don't differentiate themselves to a probing client.
 
 ### 9.4 Origin / RP-ID validation
 
@@ -1011,11 +1348,14 @@ The implementation must explicitly handle every item below; each gets at least o
 - RP-ID is a registrable suffix of origin; `example.com` matches `https://app.example.com` but `example.com` does NOT match `https://example.org`. Use the WebAuthn algorithm exactly — no shortcut substring matching.
 - IPv6 origins (`https://[::1]:8080`) — accept for localhost dev only.
 
-### 9.5 Challenge / session
+### 9.5 Challenge envelope
 
-- The session envelope must include the user ID (when known) so a registration challenge cannot be replayed against authentication. Mismatched ID → `InvalidSessionError`.
+- The envelope payload is `{ challenge, ceremony, kid, iat, userId? }` HMAC-SHA-256-signed with the active key.
+  - `ceremony: 'reg' | 'auth'` is asserted on verify so a registration token cannot be replayed at the auth endpoint and vice-versa. Mismatch → `WrongCeremonyError`.
+  - `kid` selects which key (active or any `previous`) verifies the tag. This lets an operator deploy a new signing key without invalidating in-flight ceremonies — the new active signs new envelopes, the old key (now in `previous`) keeps verifying outstanding ones until TTL.
+  - `userId` is included when known (registration always; authentication only for non-discoverable flows). For discoverable login (`generateAuthenticationOptions` with no `user`) there is no `userId` to pin, so the `ceremony` discriminator is doing the work alone.
 - TTL default 5 minutes. Caller may override down to 30 s, never up beyond 10 m.
-- Constant-time HMAC compare for the envelope tag.
+- HMAC compare via `crypto.subtle.verify` — constant-time over key+message.
 
 ### 9.6 Counter handling
 
@@ -1025,7 +1365,8 @@ The implementation must explicitly handle every item below; each gets at least o
 
 ### 9.7 User verification
 
-- `requireUserVerification` defaults true. If false, `flags.uv` may be 0 — but the verifier still asserts `flags.up === 1` (User Presence is mandatory always).
+- `userVerification` defaults to `'required'` on both `generate*Options` calls. The library targets fintech/healthcare audiences with NIST AAL3 / PSD2 SCA requirements; defaulting to anything weaker silently breaks compliance. Consumer apps explicitly opt down to `'preferred'`. This default is part of the v0.1 stability commitment (Appendix C).
+- `requireUserVerification` on `verify*` defaults to `true`. If false, `flags.uv` may be 0 — but the verifier still asserts `flags.up === 1` (User Presence is mandatory always).
 
 ### 9.8 Conditional UI
 
@@ -1041,12 +1382,14 @@ The implementation must explicitly handle every item below; each gets at least o
 
 - `generateAuthenticationOptions` with no `user` returns `allowCredentials: []`. Do NOT default to listing all credentials (privacy leak).
 - After `verifyAuthentication`, the caller receives `userId` extracted from the stored `CredentialRecord` — the browser never names the user.
+- The credential lookup MUST NOT leak `credentialId` enumeration via timing or via distinct error codes. `findByCredentialId` returning `null` and a successful lookup whose signature later fails to verify both surface as `authentication_failed` to the caller; internally the `null` branch performs a synthetic constant-time HMAC verify so the request duration is statistically indistinguishable from the real-credential branch (jitter aside). Callers MUST treat the public code as a single failure bucket — adapters log the granular internal reason via the `onVerified`-like audit hook only.
 
 ### 9.11 Edge / runtime quirks
 
 - Cloudflare Workers' WebCrypto rejects `RSASSA-PKCS1-v1_5` import with `"hash"` in the params — must omit and supply at verify-time. Branch in `core/crypto/verify.ts`.
 - Bun's `crypto.subtle` had a broken Ed25519 import before v1.1.x — pin minimum Bun version in README.
 - Node 18.x lacks `crypto.randomUUID()` in some early patches — never use it; we have our own `randomBytes`.
+- `node:crypto` is **never** imported under `workerd` / `edge-light` / `deno` / `browser` conditions. The polyfill path lives in a single file (`core/crypto/webcrypto-shim.node.ts`) selected via a `package.json#imports` conditional alias (see §6.3). A `typeof process !== 'undefined'` guard would still leave esbuild bundling the `node:crypto` import — that path is forbidden.
 
 ### 9.12 Browser quirks
 
@@ -1058,13 +1401,14 @@ The implementation must explicitly handle every item below; each gets at least o
 
 - Unique constraint on `credentialId` — adapters must turn the DB unique-violation into `InvalidStateError` (`code: 'invalid_state'`), not bubble the raw DB error.
 - A user deleting their last passkey: caller responsibility to enforce, but `store.deleteByCredentialId` must succeed regardless.
-- `findByCredentialId` returning a credential whose `userId` doesn't exist anymore — treat as `CredentialNotFoundError` to avoid orphan-cred login.
+- `findByCredentialId` returning a credential whose `userId` doesn't exist anymore — treat as `authentication_failed` (orphan credential is indistinguishable from an attacker's lookup attempt at the public boundary).
 
 ### 9.14 Errors
 
 - `PasskeyError.toJSON` must NEVER include `cause` — that may leak stack frames or DB error text. Server logs see `cause`; clients see `{ code, message }`.
 - All error messages are static strings (no template-interpolated user input) so they are safe to display unfiltered.
 - `Error.captureStackTrace` is V8-only — guard with a feature check; on Bun/Deno the constructor sets `.stack` itself.
+- `verifyAuthentication`'s "credential not found" path runs the same shape of work (synthetic HMAC verify against a dummy COSE key) as the success path, so timing does not branch on credential existence. Both surface as `AuthenticationFailedError` (`code: 'authentication_failed'`) at the public boundary; the server-side audit log records the granular internal reason.
 
 ### 9.15 SSR / hydration
 
@@ -1072,7 +1416,7 @@ The implementation must explicitly handle every item below; each gets at least o
 
 ### 9.16 Concurrency
 
-- Two registration attempts in the same tab — second `register()` call must abort the first via shared AbortController, otherwise the browser shows two prompts.
+- Two registration attempts in the same tab — second `startRegistration()` call must abort the first via shared AbortController, otherwise the browser shows two prompts.
 - Server-side: the `verifyRegistration → store.create` window is the caller's responsibility to wrap in a transaction. Documented in the JSDoc of `verifyRegistration` and the README "production checklist".
 
 ---
@@ -1095,3 +1439,86 @@ The implementation must explicitly handle every item below; each gets at least o
 - WebAuthn FIDO U2F migration helpers (legacy U2F → WebAuthn cred conversion).
 - A drop-in account-recovery UI (call site responsibility; we expose hooks).
 - Email / SMS / OTP — `@authkit/passkeys` is passkey-only by design; sister packages can layer on top.
+
+## Appendix C — v0.1 stability commitments
+
+These choices are part of the public contract and will not flip without a major
+version bump:
+
+- **Default `userVerification: 'required'`** on both `generateRegistrationOptions` and `generateAuthenticationOptions`. Rationale: fintech / healthcare audience with NIST AAL3 / PSD2 SCA requirements. Consumer-grade callers opt down to `'preferred'` explicitly.
+- **Default `pubKeyCredAlgs: ['ES256','EdDSA','RS256']`**. EdDSA precedes RS256 because Ed25519 keys are ~32 B vs RSA ≥256 B.
+- **Single `authentication_failed` public code** for the auth path — collapsing credential-lookup miss and signature mismatch (see §5.6, §9.10).
+- **No process.env / no global lookups** anywhere in `/server`. All secrets are passed explicitly through `signingKeys` (see §2.2). This is the load-bearing edge-runtime portability promise.
+- **`PasskeyError.toJSON()` returns `{ code, message }` only.** `cause` and stack traces are never serialised.
+- **Stable error code strings.** Adding a new code is a minor version bump; renaming or removing one is major.
+- **Headline `<6 KB client / <12 KB default-server`** bundle budgets. Adding a new attestation format to the default bundle (out of `none` / `packed`) is a major version bump if it crosses 12 KB.
+
+---
+
+## Review Changes
+
+This section records every point raised in PR #1's architecture review by Vasyl Bruhanda and how it was resolved. The review came in two batches; some points in the first batch referenced types or APIs that did not exist in PLAN.md (`RelyingParty`, `Result<T, E>`, `signCountStatic`, `expectedUserId`, default-transports list) — those are recorded as N/A with an explanation rather than silently ignored.
+
+### Batch 1
+
+1. **[BLOCKER — security] UV default conflict (§10 vs §2.1).** Reviewer flagged that the example used `userVerification: 'required'` while §10 said default `'preferred'`. **Resolved:** changed the documented default in §2.2 / §9.7 / Appendix C to `userVerification: 'required'` and pinned it as a v0.1 stability commitment, citing the fintech / NIST AAL3 / PSD2 SCA personas from the research report. Consumer-grade flows now opt down explicitly. Sections modified: §2.2 (`GenerateRegistrationInput`, `GenerateAuthenticationInput`), §9.7, new Appendix C.
+
+2. **[BLOCKER — security/timing] Distinct codes for `unknown-credential` vs `bad-signature`.** Reviewer flagged that distinct codes leak credential-ID enumeration via timing/error oracle. **Resolved:** collapsed `credential_not_found` and `invalid_signature` into a single public `authentication_failed` code; added §5.6 documenting the timing-safe constant-time HMAC compare and the synthetic-verify on the credential-not-found path; added §9.10 / §9.14 detail. Sections modified: §2.6 (`PasskeyErrorCode`, error classes), §5.2 hierarchy, new §5.6, §9.10, §9.14, §9.13.
+
+3. **[HIGH — types] DOM-typed `extensions` / `clientExtensionResults` leaks into server module.** **Resolved:** introduced a locally-defined `PasskeyExtensionResultsJSON` interface in `types/webauthn-json.ts` and replaced `AuthenticationExtensionsClientOutputsJSON` references in the public API with it. Added an audit note that every public `*JSON` field is checked for DOM-lib leakage. Sections modified: §4.2.
+
+4. **[HIGH — API surface] Three registration APIs (RelyingParty / standalone / adapters).** **N/A as written:** PLAN.md never proposed a `RelyingParty` class; it has only the standalone `generateRegistrationOptions` plus framework adapters. The intent of the recommendation (smaller surface area) was already met, so no change beyond clarifying in the §1 banner that `/browser` exposes the small (`startRegistration` / `startAuthentication` + 3 detection + 2 parse) surface honestly.
+
+5. **[HIGH — missing field] `signCountStatic` on `CredentialRecord`.** **N/A as written:** PLAN.md never claimed `signCountStatic`; §9.6 already says "0 → 0 is NOT a regression — only strictly less than the stored value is" which is the spec-correct treatment without needing a separate flag. The public `CredentialRecord` does, however, now expose `backupEligible`, `backupState`, `deviceType`, and `transports` (see review point 2.5 below) which is the actually-useful metadata the reviewer was reaching for.
+
+6. **[HIGH — missing feature vs report] `onFallback` only in `<PasskeyButton>`, not `usePasskey` / non-React adapters.** **Resolved:** added `onFallback?: (err: PasskeyError) => void | Promise<void>` to `UsePasskeyOptions`; documented the same pattern for non-React adapters in §2.4 ("each adapter's verify route handler accepts an `onError` config…"). Sections modified: §2.4.
+
+7. **[MEDIUM — bundle target mismatch] README banner says `<10KB` without scope.** **Resolved:** clarified §6.1 headline ("client core is <6 KB; default server bundle is <12 KB"); aligned package.json `description` to the same scoped phrasing so the marketing claim cannot be challenged when a Worker bundle lands at 12 KB. Files modified: `PLAN.md` §6.1, `package.json` `description`.
+
+8. **[MEDIUM — naming] `register` / `authenticate` collide with framework primitives.** **Resolved:** renamed browser entry points to `startRegistration` / `startAuthentication` to mirror the server method names. Sections modified: §1 banner, §2.1, §3.4, §5.5, every example. (Same point also raised in batch 2.)
+
+9. **[MEDIUM — security] `SignedJwtChallengeStore` has no key-rotation contract.** **N/A as written:** PLAN.md never had a "JwtChallengeStore" — but the underlying concern (key rotation orphans in-flight challenges) was real. **Resolved alongside batch 2 point 3:** introduced `ChallengeSigningKeys = { active: { kid, secret }; previous?: [{ kid, secret }] }` with verify-any / sign-newest semantics so an operator can stage a rotation without invalidating outstanding ceremonies. Sections modified: §2.2 (added `ChallengeSigningKeys`), §9.5.
+
+10. **[MEDIUM — Edge runtime] `node:crypto` polyfill story not explicit.** **Resolved:** added §6.3 detail describing the `package.json#imports` conditional alias for `#webcrypto-shim`, and a separate `webcrypto-shim.node.ts` that is the *only* file with `import { webcrypto } from 'node:crypto'`. Documented in §9.11 that runtime `typeof process` guards are explicitly forbidden because esbuild still inlines the import. Files modified: `PLAN.md` §3 file listing (added two shim files), §6.3, §9.11; `package.json` `imports`.
+
+11. **[MEDIUM — types/policy override] `Partial<AuthenticatorPolicy>` accepts unknown keys.** **N/A as written:** PLAN.md never had a `Partial<AuthenticatorPolicy>` parameter — the policy override is `policy?: AaguidPolicy`. The new `AaguidPolicy` definition in §2.2 has explicit named fields (`mode`, `allow`, `deny`, `allowAnonymous`), no spread / no `Partial<…>`, so the typo footgun does not apply.
+
+12. **[LOW — types] `expectedUserId: string | Uint8Array`.** **N/A:** PLAN.md never had an `expectedUserId` parameter (user identity is read from the stored credential, not passed by the verifier). `CredentialRecord.userId` remains `string` end-to-end with no lossy decode path.
+
+13. **[LOW — missing rule] `errors/` not listed as ESLint-rule exception.** **Resolved:** rewrote §3.1 rules to make `errors/` a true leaf module (imports nothing from siblings, not even `core/`), which removes the "everyone imports `errors/`" hand-wave.
+
+14. **[NIT] Default `transports` list missing `'nfc'` / `'ble'`.** **N/A:** PLAN.md doesn't enumerate a default `transports` list — the library plumbs whatever the authenticator reports. The `CredentialRecord.transports` doc-comment now lists all five spec values (`internal`, `hybrid`, `usb`, `nfc`, `ble`).
+
+### Batch 2
+
+1. **[blocker] `sessionSecret` defaulting to `PASSKEY_SESSION_SECRET` env var.** **Resolved:** removed the env-var default. `signingKeys` is now a required input on `generate*Options` / `verify*` — no global lookup, no `process.env`, no Workers-binding gymnastics. Recorded in Appendix C as a v0.1 stability commitment ("no global lookups anywhere in `/server`"). Sections modified: §2.2 every input interface; new Appendix C.
+
+2. **[blocker] `SessionToken` name collision with auth-session.** **Resolved:** renamed the type to `ChallengeToken`, the returned tuple field from `session` to `challengeToken`, the verifier helpers to `signChallengeToken` / `verifyChallengeToken`, and the error code to `invalid_challenge_token` (with a corresponding `InvalidChallengeTokenError` class). Sections modified: §2.2 every signature & example, §2.6 (`PasskeyErrorCode`, classes), §3 file listing (`challenge.ts` description), §4.1, §5.2, §5.6, §9.5.
+
+3. **[major] §9.5 envelope replay across ceremonies + missing `kid` for rotation.** **Resolved:** envelope payload is now `{ challenge, ceremony, kid, iat, userId? }`; verifier asserts `ceremony` matches the call and emits `WrongCeremonyError` (`code: 'wrong_ceremony'`) on mismatch. `kid` selects which key (active or any `previous`) verifies the tag, enabling overlapping-window rotation. Sections modified: §2.2 (`ChallengeSigningKeys` definition), §2.6 (`wrong_ceremony` code + `WrongCeremonyError` class), §5.2 hierarchy, §9.5.
+
+4. **[major] `Kysely<any>` and Drizzle dialect-union conflate three SQL dialects.** **Resolved:** `createKyselyCredentialStore` is now generic over the schema type (`Kysely<DB>`, `table: keyof DB & string`, `DB extends Record<string, PasskeyCredentialRow>`); Drizzle is split into three dialect-specific factories (`createDrizzlePgCredentialStore`, `createDrizzleMySqlCredentialStore`, `createDrizzleSqliteCredentialStore`), each accepting only the table type for its dialect. Sections modified: §2.3, §3 file listing (storage/), §7.2 peer table, §8.3 `tsup` entries; `package.json` `exports` and `imports` map.
+
+5. **[major] Missing `backupEligible` / `backupState` / `deviceType` / `transports` on `CredentialRecord`.** **Resolved:** added the canonical `CredentialRecord<TUserId>` and `NewCredentialRecord<TUserId>` shapes in §2.3 with `transports`, `backupEligible`, `backupState`, `deviceType`, `createdAt`, `lastUsedAt`. Added `updateBackupState` to the `CredentialStore` interface so the BS bit can be persisted when it flips on a later auth ceremony. The audit-event types in §2.2 (`RegistrationVerifiedEvent`, `AuthenticationVerifiedEvent`) expose the same fields. Sections modified: §2.2, §2.3.
+
+6. **[major] `AaguidPolicy`, `RegistrationVerifiedEvent`, `AuthenticationVerifiedEvent` undefined.** **Resolved:** all three are now defined in §2.2 with explicit field shapes. `AaguidPolicy` documents the `mode` / `allow` / `deny` / `allowAnonymous` precedence rules.
+
+7. **[major] 12 KB server budget too tight for `none` + `packed` + `fido-u2f` + `apple`.** **Resolved:** narrowed the *default* server bundle to `none` + `packed` only; pushed `apple`, `fido-u2f`, `tpm`, and `android-key` behind dynamic imports (registry-of-thunks pattern in §3.4). Added §6.4 explaining the hand-rolled ASN.1 SEQUENCE walker that `apple.ts` uses instead of `asn1js` when it is dynamically loaded. Sections modified: §3 file listing (each format flagged shipped vs dynamic), §3.4, §6.1 budget table (added per-format incremental budgets), new §6.4.
+
+8. **[minor] `register` / `authenticate` rename + `/browser` exports 7 fns, not 2.** **Resolved alongside batch 1 point 8:** renamed to `startRegistration` / `startAuthentication`; corrected the §1 banner to honestly say `/browser` exposes "the two ceremony entry points, three feature-detection helpers, two parse helpers" instead of "one register/authenticate browser pair."
+
+9. **[minor] `RegisterInit.onFallback` truthy=swallow convention is non-obvious.** **Resolved:** the hook is now fire-and-forget — the rejection always propagates, and the hook is documented as a notification-only side channel. §5.5 records the design and the prior pitfall. The return type is `void | Promise<void>` (no boolean). Sections modified: §2.1 (`RegisterInit`), §5.5.
+
+10. **[minor] `mediation: 'silent'` does not apply to WebAuthn.** **Resolved:** narrowed the union to `'conditional' | 'optional' | 'required'` on both `AuthenticateInit.mediation` and `UsePasskeyResult.authenticate`. Added an explicit JSDoc note that `'conditional'` requires a successful `isConditionalUISupported()` check; the function throws `NotSupportedError` synchronously otherwise (already captured in §9.8). Sections modified: §2.1, §2.4.
+
+11. **[minor] `PasskeyButton` cannot attach Authorization / CSRF headers / custom fetch.** **Resolved:** added `fetcher?: typeof fetch` and `headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>)` to both `PasskeyButtonProps` and `UsePasskeyOptions`. Sections modified: §2.4.
+
+12. **[minor] `pubKeyCredAlgs` default order biases toward RSA.** **Resolved:** changed default from `['ES256','RS256','EdDSA']` to `['ES256','EdDSA','RS256']`. Pinned in Appendix C. Sections modified: §2.2, Appendix C.
+
+13. **[minor] Prisma `model?: string` throws away schema type-safety.** **Resolved:** the factory now requires a typed Prisma delegate (`opts.delegate`, e.g. `prisma.passkeyCredential`) so renames break at the call site at compile time. Sections modified: §2.3, §3 file listing.
+
+14. **[nit] `Base64Url` brand validation must be runtime.** **Resolved:** §4.1 now spells out that `Base64Url` is minted only by the validating constructors (`toBase64Url(Uint8Array)` / `assertBase64Url(string)`) and that bare structural casts are an ESLint-blocked anti-pattern. Same for `AaguidString` and `ChallengeToken`.
+
+15. **[nit] `usePasskey` four flat URL props.** **Resolved:** grouped as `{ register: { optionsUrl, verifyUrl }, authenticate: { optionsUrl, verifyUrl } }` — mirrors `PasskeyButton.endpoints`. Sections modified: §2.4.
+
+16. **[nit] `CHANGELOG.md` doesn't exist yet.** **Acknowledged, no change.** `package.json#files` keeps `CHANGELOG.md` listed because Changesets generates it on first release. `npm pack` will warn before that point — fine, captured here for traceability.
