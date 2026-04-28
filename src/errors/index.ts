@@ -1,11 +1,28 @@
 export {
   ERROR_MESSAGES,
-  FALLBACK_REASONS,
+  FALLBACK_CODES,
   type PasskeyErrorCode,
   type PasskeyInternalReason,
 } from './codes.js';
-export { PasskeyError, type PasskeyErrorDetails } from './base.js';
-export { PasskeyClientError, mapDomExceptionToClientError } from './client.js';
-export { PasskeyVerificationError } from './verification.js';
-export { PasskeyPolicyError } from './policy.js';
-export { PasskeyInternalError } from './internal.js';
+export { PasskeyError, isPasskeyError, type PasskeyErrorDetails } from './base.js';
+export {
+  NotSupportedError,
+  UserCancelledError,
+  TimeoutError,
+  InvalidStateError,
+  SecurityError,
+  InvalidChallengeTokenError,
+  WrongCeremonyError,
+  InvalidChallengeError,
+  InvalidOriginError,
+  InvalidRpIdError,
+  AuthenticationFailedError,
+  InvalidAttestationError,
+  UnsupportedAlgorithmError,
+  UnsupportedAttestationFormatError,
+  CounterRegressionError,
+  UserVerificationRequiredError,
+  AaguidNotAllowedError,
+  StorageError,
+  InternalError,
+} from './classes.js';

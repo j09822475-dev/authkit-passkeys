@@ -1,63 +1,98 @@
-import type { COSEAlgorithmIdentifier } from './webauthn-json.js';
-import type { AuthenticatorTransport } from './transport.js';
+import type { AaguidString, AuthenticatorTransport, Base64Url } from './webauthn.js';
 
 /**
- * What `RelyingParty.finishRegistration` returns and what callers persist via
- * `CredentialStore.save(record)`.
+ * The persisted credential shape. Branded with the caller's `TUserId` so
+ * lookups type-check end-to-end.
  *
- * The whole record is the source of truth for re-authentication. Persist all
- * fields — losing `signCount` / `signCountStatic` re-opens replay-detection
- * holes; losing `aaguid` breaks downstream MDS3 policies.
+ * Storage adapters MUST round-trip every field — losing `aaguid` breaks
+ * downstream MDS3 policies, losing `counter` re-opens replay-detection holes,
+ * losing `backupState` breaks the BS-bit observability the audit hook
+ * surfaces.
  */
-export interface CredentialRecord {
-  /** base64url-encoded credential identifier (matches WebAuthn `id`). */
-  credentialId: string;
+export interface CredentialRecord<TUserId extends string = string> {
+  /** WebAuthn credential ID, base64url-encoded. */
+  credentialId: Base64Url;
+  /** Owner of this credential. */
+  userId: TUserId;
   /**
-   * Canonical user handle bytes (up to 64). NEVER lossily decoded to UTF-8 —
-   * binary user IDs (e.g. random 32-byte tokens) round-trip exactly.
+   * Stored COSE public key, base64url-encoded. Decoded internally via
+   * `parseCoseKey` for verification — the SQL column is opaque.
    */
-  userId: Uint8Array;
-  /** SPKI-encoded public key — re-importable via `crypto.subtle.importKey`. */
-  publicKey: Uint8Array;
-  /** COSE algorithm identifier (e.g. -7 = ES256, -257 = RS256, -8 = EdDSA). */
-  publicKeyAlgorithm: COSEAlgorithmIdentifier;
-  /** Latest sign-counter the authenticator has reported. */
-  signCount: number;
+  publicKey: Base64Url;
+  /** Authenticator model identifier (16-byte UUID, dashed). */
+  aaguid: AaguidString;
+  /** Last observed signature counter. 0 is legitimate for sync passkeys (PLAN §9.6). */
+  counter: number;
   /**
-   * `true` iff this authenticator is known to always return `signCount === 0`
-   * (iCloud Keychain, Google Password Manager, etc.). `null` until the first
-   * authentication observes a counter; flipped to `true` on a 0-counter assertion
-   * and `false` on a non-zero one. Policy code skips the "counter must increase"
-   * check when `signCountStatic === true`.
+   * Authenticator-reported transports (`internal`, `hybrid`, `usb`, `nfc`, `ble`).
+   * Used to populate `allowCredentials.transports` so subsequent ceremonies
+   * pick the right UI prompt.
    */
-  signCountStatic: boolean | null;
-  transports: AuthenticatorTransport[];
-  /** Hex-formatted UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). */
-  aaguid: string;
+  transports: ReadonlyArray<AuthenticatorTransport>;
+  /** BE bit — this credential CAN be backed up / synced (multi-device). */
   backupEligible: boolean;
+  /** BS bit — this credential IS currently backed up. Mutates over a credential's lifetime. */
   backupState: boolean;
-  attestationFormat: string;
-  createdAt: Date;
+  /** Derived from `backupEligible`. Stored explicitly so DB queries don't recompute. */
+  deviceType: 'singleDevice' | 'multiDevice';
+  /** First successful registration timestamp (epoch ms). */
+  createdAt: number;
+  /** Last successful authentication timestamp (epoch ms). */
+  lastUsedAt: number | null;
 }
 
 /**
- * What `RelyingParty.finishAuthentication` resolves to on success. The caller
- * MUST persist the new sign-counter (and `signCountStatic` if it changed)
- * atomically with session creation.
+ * What `verifyRegistration` returns. The caller fills `userId` (and may
+ * accept the defaults for `createdAt` / `lastUsedAt`) before passing to
+ * `store.create`. The library does NOT touch the store automatically — the
+ * call site owns the transaction boundary.
  */
-export interface AuthenticatedCredential {
-  credentialId: string;
-  userId: Uint8Array;
-  /** Counter reported by THIS assertion — caller persists via `updateSignCount`. */
-  newSignCount: number;
-  /** `true` if the credential was observed to be static this round. */
-  signCountStatic: boolean;
-  /** Echoed from the credential record — handy for downstream session metadata. */
-  aaguid: string;
-  /** Backup state observed in this assertion — store it. */
-  backupState: boolean;
-  /** Backup eligibility observed in this assertion (immutable; should match record). */
+export type NewCredentialRecord<TUserId extends string = string> = Omit<
+  CredentialRecord<TUserId>,
+  'userId' | 'createdAt' | 'lastUsedAt'
+> & {
+  /** Fill before passing to `store.create`. */
+  userId?: TUserId;
+};
+
+/**
+ * Audit/logging payload fired by `verifyRegistration.onVerified`. Server-side
+ * only — the granular `attestationFormat` and `aaguid` are useful for fraud
+ * scoring but should never be forwarded to the browser.
+ */
+export interface RegistrationVerifiedEvent {
+  credentialId: Base64Url;
+  aaguid: AaguidString;
+  attestationFormat: string;
+  transports: ReadonlyArray<AuthenticatorTransport>;
+  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean };
+  /** Whether the credential is sync-eligible (BE bit). */
   backupEligible: boolean;
-  /** Optional client-extension outputs (PRF results, etc.). */
-  extensionResults?: Record<string, unknown>;
+  /** Whether the credential is currently synced/backed up (BS bit). */
+  backupState: boolean;
+  /** Derived from BE: `'multiDevice'` if BE=1, else `'singleDevice'`. */
+  deviceType: 'singleDevice' | 'multiDevice';
+}
+
+/** Audit/logging payload fired by `verifyAuthentication.onVerified`. */
+export interface AuthenticationVerifiedEvent<TUserId extends string = string> {
+  userId: TUserId;
+  credentialId: Base64Url;
+  /** Strictly-greater counter value, or 0 when the authenticator is signCount-static. */
+  newCounter: number;
+  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean };
+  /** True when the stored BS bit just flipped 0→1 (credential just got backed up). */
+  newlyBackedUp: boolean;
+}
+
+/** Successful authentication payload returned to the call site. */
+export interface VerifiedAuthentication<TUserId extends string = string> {
+  /** The user owning the credential. */
+  userId: TUserId;
+  /** The credential that was used. `counter` is the NEW value to persist. */
+  credential: CredentialRecord<TUserId>;
+  /** Updated counter — call `store.updateCounter(credentialId, newCounter)` after your tx commits. */
+  newCounter: number;
+  /** True when WebAuthn `flags.uv` was set. */
+  userVerified: boolean;
 }

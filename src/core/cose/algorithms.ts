@@ -1,7 +1,7 @@
-import type { COSEAlgorithmIdentifier } from '../../types/webauthn-json.js';
+import type { CoseAlgId, CoseAlgName } from '../../types/webauthn.js';
 
 /**
- * COSE algorithm identifiers we support out of the box.
+ * COSE algorithm identifiers.
  * @see https://www.iana.org/assignments/cose/cose.xhtml#algorithms
  */
 export const COSE_ALG = {
@@ -21,23 +21,17 @@ export const COSE_ALG = {
   RS512: -259,
   /** RSASSA-PSS w/ SHA-256. */
   PS256: -37,
-  /** RSASSA-PSS w/ SHA-384. */
-  PS384: -38,
-  /** RSASSA-PSS w/ SHA-512. */
-  PS512: -39,
-} as const satisfies Record<string, COSEAlgorithmIdentifier>;
+} as const satisfies Record<CoseAlgName, CoseAlgId>;
 
-/** Default algorithm preference offered to the authenticator at registration. */
-export const DEFAULT_PUB_KEY_CRED_PARAMS: ReadonlyArray<{
-  alg: COSEAlgorithmIdentifier;
-  type: 'public-key';
-}> = [
-  { alg: COSE_ALG.ES256, type: 'public-key' },
-  { alg: COSE_ALG.EdDSA, type: 'public-key' },
-  { alg: COSE_ALG.RS256, type: 'public-key' },
-];
+/**
+ * Default algorithm preference offered to the authenticator at registration.
+ *
+ * EdDSA precedes RS256 because Ed25519 keys are ~32 B vs RSA ≥256 B; RS256 is
+ * kept for Windows Hello compatibility (PLAN Appendix C).
+ */
+export const DEFAULT_PUB_KEY_CRED_ALGS: ReadonlyArray<CoseAlgName> = ['ES256', 'EdDSA', 'RS256'];
 
-/** COSE EC2 curve identifiers. */
+/** COSE EC2 / OKP curve identifiers. */
 export const COSE_CURVE = {
   P_256: 1,
   P_384: 2,
@@ -46,10 +40,24 @@ export const COSE_CURVE = {
 } as const;
 
 /**
- * Mapping from COSE algorithm to the parameters required by `crypto.subtle.verify`.
- * Returns `null` if the algorithm is not supported by this build.
+ * Resolve the COSE algorithm identifier for a name.
+ *
+ * @param name  Algorithm name (e.g. `'ES256'`).
+ * @returns     The signed COSE algorithm integer.
  */
-export function coseAlgToWebCrypto(alg: COSEAlgorithmIdentifier): {
+export function coseAlgId(name: CoseAlgName): CoseAlgId {
+  return COSE_ALG[name];
+}
+
+/**
+ * Map a COSE algorithm identifier to the parameters required by
+ * `crypto.subtle.importKey` and `crypto.subtle.verify`. Returns `null` if the
+ * algorithm is not supported by this build.
+ *
+ * @param alg  COSE algorithm identifier.
+ * @returns    `{ importParams, verifyParams }` or `null`.
+ */
+export function coseAlgToWebCrypto(alg: CoseAlgId): {
   importParams: AlgorithmIdentifier | EcKeyImportParams | RsaHashedImportParams;
   verifyParams: AlgorithmIdentifier | EcdsaParams | RsaPssParams;
 } | null {
@@ -94,22 +102,12 @@ export function coseAlgToWebCrypto(alg: COSEAlgorithmIdentifier): {
         importParams: { name: 'RSA-PSS', hash: 'SHA-256' },
         verifyParams: { name: 'RSA-PSS', saltLength: 32 },
       };
-    case COSE_ALG.PS384:
-      return {
-        importParams: { name: 'RSA-PSS', hash: 'SHA-384' },
-        verifyParams: { name: 'RSA-PSS', saltLength: 48 },
-      };
-    case COSE_ALG.PS512:
-      return {
-        importParams: { name: 'RSA-PSS', hash: 'SHA-512' },
-        verifyParams: { name: 'RSA-PSS', saltLength: 64 },
-      };
     default:
       return null;
   }
 }
 
-/** Algorithms that use raw `r||s` ECDSA signatures (need DER conversion before WebCrypto). */
-export function isEcdsaAlg(alg: COSEAlgorithmIdentifier): boolean {
+/** True iff `alg` is an ECDSA variant (raw r||s ↔ DER conversion required). */
+export function isEcdsaAlg(alg: CoseAlgId): boolean {
   return alg === COSE_ALG.ES256 || alg === COSE_ALG.ES384 || alg === COSE_ALG.ES512;
 }

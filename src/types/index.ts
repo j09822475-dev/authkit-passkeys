@@ -1,37 +1,45 @@
-export type { AuthenticatorTransport } from './transport.js';
-export { ALL_TRANSPORTS } from './transport.js';
-export type { AuthenticatorFlags } from './flags.js';
 export type {
+  AaguidString,
   AttestationConveyancePreference,
+  AttestationFormat,
+  AuthenticationOptionsJSON,
+  AuthenticationResponseJSON,
   AuthenticatorAssertionResponseJSON,
   AuthenticatorAttachment,
   AuthenticatorAttestationResponseJSON,
-  AuthenticatorSelectionCriteria,
-  AuthenticationResponseJSON,
-  COSEAlgorithmIdentifier,
+  AuthenticatorFlags,
+  AuthenticatorSelectionCriteriaJSON,
+  AuthenticatorTransport,
+  Base64Url,
   ChallengeToken,
-  CredentialId,
-  PasskeyExtensionsInput,
-  PasskeyExtensionsOutput,
-  PublicKeyCredentialCreationOptionsJSON,
+  CoseAlgId,
+  CoseAlgName,
+  PasskeyExtensionInputsJSON,
+  PasskeyExtensionResultsJSON,
   PublicKeyCredentialDescriptorJSON,
-  PublicKeyCredentialParameters,
-  PublicKeyCredentialRequestOptionsJSON,
-  PublicKeyCredentialRpEntity,
+  PublicKeyCredentialParametersJSON,
+  PublicKeyCredentialRpEntityJSON,
   PublicKeyCredentialUserEntityJSON,
+  RegistrationOptionsJSON,
   RegistrationResponseJSON,
   ResidentKeyRequirement,
   UserVerificationRequirement,
-} from './webauthn-json.js';
-export type { CredentialRecord, AuthenticatedCredential } from './credential.js';
+} from './webauthn.js';
+export { ALL_TRANSPORTS } from './webauthn.js';
+
 export type {
-  AuthenticatorPolicy,
-  AuthenticatorPolicyOverride,
-  RpConfigOverride,
-} from './policy.js';
+  AuthenticationVerifiedEvent,
+  CredentialRecord,
+  NewCredentialRecord,
+  RegistrationVerifiedEvent,
+  VerifiedAuthentication,
+} from './credential.js';
+
+export type { AaguidPolicy, ChallengeSigningKeys } from './options.js';
+
 export type {
   ParsedAttestationObject,
   ParsedAuthenticatorData,
   ParsedClientData,
   ParsedCoseKey,
-} from './ceremony.js';
+} from './parsed.js';

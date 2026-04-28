@@ -1,132 +1,193 @@
-import { PasskeyVerificationError } from '../errors/verification.js';
-import { PasskeyError } from '../errors/base.js';
+import {
+  InvalidAttestationError,
+  InvalidRpIdError,
+} from '../errors/classes.js';
 import { fromBase64Url, toBase64Url } from '../core/encoding/base64url.js';
 import { aaguidToUuid } from '../core/encoding/hex.js';
-import { sha256 } from '../core/crypto/digest.js';
 import { encodeUtf8 } from '../core/encoding/utf8.js';
-import { parseClientDataJSON, assertExpectedClientData } from '../core/ceremony/client-data.js';
-import { parseAttestationObject } from '../core/ceremony/attestation.js';
-import { validateRpId } from '../core/ceremony/rp-id.js';
-import { parseCoseKey, exportCoseKeyAsSpki } from '../core/cose/key.js';
+import { sha256 } from '../core/crypto/digest.js';
 import {
-  DEFAULT_ATTESTATION_VERIFIERS,
-  type AttestationVerifier,
-} from '../core/attestation-formats/index.js';
+  assertExpectedClientData,
+  assertOriginMatchesRpId,
+  parseAttestationObject,
+  parseClientDataJSON,
+} from '../core/ceremony/index.js';
+import { parseCoseKey } from '../core/cose/key.js';
+import { verifyChallenge } from './challenge.js';
+import { verifyAttestation, type AttestationVerifier } from './attestation/index.js';
+import { assertAaguidAllowed } from './policy/aaguid.js';
+import { assertUserVerification } from './policy/user-verification.js';
 import type {
-  AttestationConveyancePreference,
+  AaguidString,
+  AuthenticatorTransport,
+  Base64Url,
+  ChallengeToken,
   RegistrationResponseJSON,
-} from '../types/webauthn-json.js';
-import type { CredentialRecord } from '../types/credential.js';
-import type { AuthenticatorTransport } from '../types/transport.js';
-import type { AuthenticatorPolicy } from '../types/policy.js';
-import { applyPolicy, formatAaguid, assertTransportAllowed } from './policies.js';
+} from '../types/webauthn.js';
+import type {
+  NewCredentialRecord,
+  RegistrationVerifiedEvent,
+} from '../types/credential.js';
+import type { AaguidPolicy, ChallengeSigningKeys } from '../types/options.js';
 
+/** Input shape for {@link verifyRegistration}. */
 export interface VerifyRegistrationInput {
   response: RegistrationResponseJSON;
-  expectedChallenge: Uint8Array;
+  challengeToken: ChallengeToken | string;
   expectedOrigin: string | readonly string[];
   expectedRpId: string;
-  expectedUserId: Uint8Array;
-  attestation: AttestationConveyancePreference;
-  policy: AuthenticatorPolicy;
-  attestationVerifiers: ReadonlyMap<string, AttestationVerifier>;
+  signingKeys: ChallengeSigningKeys;
+  /** Default `true`. Set `false` ONLY to integrate with non-https dev. */
+  requireUserVerification?: boolean;
+  /**
+   * Hook fired after verification but before the function returns. Use for
+   * logging / audit. Errors thrown inside the hook propagate.
+   */
+  onVerified?: (ev: RegistrationVerifiedEvent) => void | Promise<void>;
+  /** Optional AAGUID allow/deny policy. */
+  policy?: AaguidPolicy;
+  /** Optional verifier override map — short-circuits the registry / dynamic-import path. */
+  attestationVerifiers?: ReadonlyMap<string, AttestationVerifier>;
 }
 
 /**
- * Internal helper. Verify a `RegistrationResponseJSON` end-to-end and produce
- * a {@link CredentialRecord} the caller persists via `CredentialStore.save`.
+ * Verify the attestation produced by the browser's {@link startRegistration}.
  *
- * On failure, throws a {@link PasskeyVerificationError} or
- * {@link PasskeyPolicyError}; the calling `RelyingParty.finishRegistration`
- * wraps these in a `Result` for the public boundary.
+ * On success returns a {@link NewCredentialRecord} ready for storage. The
+ * store is NOT written automatically — call `store.create(record)` from
+ * your app code so you control the transaction boundary (e.g. wrapping with
+ * the user-creation row).
+ *
+ * @param input  Verification input — see {@link VerifyRegistrationInput}.
+ * @returns      The new credential record (caller fills `userId` if it differs
+ *               from the binding embedded in the challenge envelope).
+ * @throws {InvalidChallengeTokenError}    Tag mismatch / expired / malformed.
+ * @throws {WrongCeremonyError}            Token issued for the auth ceremony.
+ * @throws {InvalidChallengeError}         clientData challenge mismatch.
+ * @throws {InvalidOriginError}            Origin not allowed.
+ * @throws {InvalidRpIdError}              `authData.rpIdHash` mismatch.
+ * @throws {InvalidAttestationError}       Attestation statement invalid.
+ * @throws {UnsupportedAttestationFormatError}  `fmt` not loaded.
+ * @throws {AaguidNotAllowedError}         AAGUID rejected by policy.
+ * @throws {UserVerificationRequiredError} UV required but `flags.uv` is 0.
+ *
+ * @example
+ *   const record = await verifyRegistration({
+ *     response: req.body,
+ *     challengeToken: getCookie('passkey_reg')!,
+ *     expectedOrigin: 'https://example.com',
+ *     expectedRpId: 'example.com',
+ *     signingKeys: PASSKEY_SIGNING_KEYS,
+ *   });
+ *   await store.create({ ...record, userId: req.user.id });
  */
-export async function _verifyRegistration(input: VerifyRegistrationInput): Promise<CredentialRecord> {
-  // 1. Decode + parse client data.
-  let clientDataBytes: Uint8Array;
-  try {
-    clientDataBytes = fromBase64Url(input.response.response.clientDataJSON);
-  } catch (cause) {
-    throw new PasskeyVerificationError('registration-failed', 'Invalid clientDataJSON encoding.', {
-      cause,
-      details: { reason: 'client-data-parse-failed' },
-    });
-  }
+export async function verifyRegistration(
+  input: VerifyRegistrationInput,
+): Promise<NewCredentialRecord> {
+  const requireUv = input.requireUserVerification ?? true;
+
+  const { challenge: expectedChallenge, userId: envelopeUserId } = await verifyChallenge(
+    input.challengeToken,
+    input.signingKeys,
+    'reg',
+  );
+
+  // Decode + validate clientData.
+  const clientDataBytes = fromBase64Url(input.response.response.clientDataJSON);
   const clientData = parseClientDataJSON(clientDataBytes);
-  assertExpectedClientData(clientData, 'webauthn.create', input.expectedChallenge, input.expectedOrigin);
+  assertExpectedClientData(clientData, 'webauthn.create', expectedChallenge, input.expectedOrigin);
+  assertOriginMatchesRpId(clientData.origin, input.expectedRpId);
 
-  // Origin → RP-ID compatibility (covers subdomain rules + scheme).
-  validateRpId(clientData.origin, input.expectedRpId);
-
-  // 2. Parse attestation object.
-  let attestationBytes: Uint8Array;
-  try {
-    attestationBytes = fromBase64Url(input.response.response.attestationObject);
-  } catch (cause) {
-    throw new PasskeyVerificationError('registration-failed', 'Invalid attestationObject encoding.', {
-      cause,
-      details: { reason: 'attestation-statement-invalid' },
-    });
-  }
+  // Decode + parse attestation object.
+  const attestationBytes = fromBase64Url(input.response.response.attestationObject);
   const attestation = parseAttestationObject(attestationBytes);
 
-  // 3. RP-ID hash check.
+  // RP-ID hash check.
   const expectedRpIdHash = await sha256(encodeUtf8(input.expectedRpId));
   if (!equalBytes(attestation.authData.rpIdHash, expectedRpIdHash)) {
-    throw new PasskeyVerificationError('bad-rp-id', 'authData.rpIdHash does not match expected rpId.', {
-      details: { reason: 'rp-id-hash-mismatch', expectedRpId: input.expectedRpId },
+    throw new InvalidRpIdError(undefined, {
+      details: { reason: 'rp_id_hash_mismatch', expectedRpId: input.expectedRpId },
     });
   }
 
   if (!attestation.authData.attestedCredentialData) {
-    throw new PasskeyVerificationError('registration-failed', 'authenticatorData.attestedCredentialData is missing.', {
-      details: { reason: 'authenticator-data-parse-failed' },
+    throw new InvalidAttestationError('authenticatorData.attestedCredentialData is missing.', {
+      details: { reason: 'authenticator_data_parse_failed' },
     });
   }
 
-  // 4. Format-specific attestation verification.
-  const verifier = input.attestationVerifiers.get(attestation.fmt) ?? DEFAULT_ATTESTATION_VERIFIERS.get(attestation.fmt);
-  if (!verifier) {
-    throw new PasskeyError('unsupported-attestation-format', `Attestation format "${attestation.fmt}" is not registered.`, {
-      details: { attestationFormat: attestation.fmt },
-    });
-  }
+  // Format-specific attestation verification.
   const clientDataHash = await sha256(clientDataBytes);
-  const result = await verifier(attestation, { clientDataHash });
-  if (!result.valid) {
-    throw new PasskeyVerificationError('registration-failed', `Attestation "${attestation.fmt}" failed verification.`, {
-      details: { reason: 'attestation-statement-invalid', attestationFormat: attestation.fmt },
-    });
+  const attResult = await verifyAttestation(
+    attestation,
+    { clientDataHash },
+    input.attestationVerifiers,
+  );
+  if (!attResult.valid) {
+    throw new InvalidAttestationError(
+      `Attestation "${attestation.fmt}" failed verification.`,
+      {
+        details: {
+          reason: 'attestation_statement_invalid',
+          attestationFormat: attestation.fmt,
+        },
+      },
+    );
   }
 
-  // 5. Apply policy.
+  // User verification + presence policy.
+  assertUserVerification(attestation.authData.flags, requireUv);
+
+  // AAGUID policy.
   const aaguid = aaguidToUuid(attestation.authData.attestedCredentialData.aaguid);
-  applyPolicy(input.policy, attestation.authData, aaguid);
+  assertAaguidAllowed(input.policy, aaguid);
 
-  // 6. Transports.
-  const transports = (input.response.response.transports ?? []) as AuthenticatorTransport[];
-  for (const t of transports) assertTransportAllowed(input.policy, t);
+  // Parse the credential public key once to surface alg / kty errors at registration
+  // time; the raw COSE bytes are persisted opaquely on `publicKey` so the SQL
+  // column stays opaque (PLAN §2.3).
+  parseCoseKey(attestation.authData.attestedCredentialData.credentialPublicKey);
+  const credentialPublicKeyCose = attestation.authData.attestedCredentialData.credentialPublicKey;
 
-  // 7. Parse + export the credential public key.
-  const coseKey = parseCoseKey(attestation.authData.attestedCredentialData.credentialPublicKey);
-  const spki = await exportCoseKeyAsSpki(coseKey);
-
-  // 8. Compose the persistent record.
   const credentialId = toBase64Url(attestation.authData.attestedCredentialData.credentialId);
+  const transports = (input.response.response.transports ?? []) as ReadonlyArray<AuthenticatorTransport>;
 
-  void formatAaguid; // explicit reference to silence unused-import on bundlers that mis-count
-  return {
+  const record: NewCredentialRecord = {
     credentialId,
-    userId: input.expectedUserId,
-    publicKey: spki,
-    publicKeyAlgorithm: coseKey.alg,
-    signCount: attestation.authData.signCount,
-    signCountStatic: null, // Unknown at registration; auth flow flips this.
-    transports,
+    publicKey: toBase64Url(credentialPublicKeyCose),
     aaguid,
+    counter: attestation.authData.signCount,
+    transports,
     backupEligible: attestation.authData.flags.be,
     backupState: attestation.authData.flags.bs,
-    attestationFormat: attestation.fmt,
-    createdAt: new Date(),
+    deviceType: attestation.authData.flags.be ? 'multiDevice' : 'singleDevice',
+    ...(envelopeUserId ? { userId: bytesToString(envelopeUserId) } : {}),
+  };
+
+  if (input.onVerified) {
+    await input.onVerified(buildVerifiedEvent(record, attestation.fmt, credentialId, aaguid, transports, attestation.authData.flags));
+  }
+
+  return record;
+}
+
+function buildVerifiedEvent(
+  record: NewCredentialRecord,
+  fmt: string,
+  credentialId: Base64Url,
+  aaguid: AaguidString,
+  transports: ReadonlyArray<AuthenticatorTransport>,
+  flags: { up: boolean; uv: boolean; be: boolean; bs: boolean; at: boolean; ed: boolean },
+): RegistrationVerifiedEvent {
+  void record;
+  return {
+    credentialId,
+    aaguid,
+    attestationFormat: fmt,
+    transports,
+    flags: { up: flags.up, uv: flags.uv, be: flags.be, bs: flags.bs },
+    backupEligible: flags.be,
+    backupState: flags.bs,
+    deviceType: flags.be ? 'multiDevice' : 'singleDevice',
   };
 }
 
@@ -134,4 +195,8 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+function bytesToString(b: Uint8Array): string {
+  return new TextDecoder('utf-8', { fatal: false }).decode(b);
 }

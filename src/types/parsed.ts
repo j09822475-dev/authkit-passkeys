@@ -1,8 +1,7 @@
-import type { COSEAlgorithmIdentifier } from './webauthn-json.js';
-import type { AuthenticatorFlags } from './flags.js';
+import type { AuthenticatorFlags, CoseAlgId } from './webauthn.js';
 
 /**
- * Decoded `authData` segment of an authenticator-data buffer.
+ * Decoded `authData` segment of a WebAuthn authenticator-data buffer.
  */
 export interface ParsedAuthenticatorData {
   /** SHA-256 hash of the RP-ID the authenticator signed against (32 bytes). */
@@ -19,7 +18,7 @@ export interface ParsedAuthenticatorData {
   };
   /** Present iff `flags.ed`. Raw CBOR-encoded extension map. */
   readonly extensions?: Uint8Array;
-  /** Original byte slice — needed for signature verification. */
+  /** Original byte slice — kept verbatim for signature verification. */
   readonly raw: Uint8Array;
 }
 
@@ -29,39 +28,35 @@ export interface ParsedAuthenticatorData {
 export interface ParsedAttestationObject {
   readonly fmt: string;
   readonly authData: ParsedAuthenticatorData;
-  /** Raw CBOR-encoded attestation statement; format-specific verifier consumes it. */
-  readonly attStmt: ReadonlyMap<string, unknown> | Record<string, unknown>;
-  /** Raw `authData` byte slice — kept verbatim for fmt verifiers that need it. */
+  /** Raw attestation statement; format-specific verifier consumes it. */
+  readonly attStmt: Record<string, unknown>;
+  /** Raw `authData` byte slice — kept verbatim for fmt verifiers that hash signed data themselves. */
   readonly rawAuthData: Uint8Array;
 }
 
-/**
- * Result of parsing & validating a `clientDataJSON` segment.
- */
+/** Result of parsing & validating a `clientDataJSON` segment. */
 export interface ParsedClientData {
-  readonly type: 'webauthn.create' | 'webauthn.get' | string;
+  readonly type: string;
   readonly challenge: string;
   readonly origin: string;
   readonly crossOrigin: boolean | undefined;
   readonly tokenBinding: { readonly status: string; readonly id?: string } | undefined;
-  /** Original raw bytes — hash THIS, never re-stringify. */
+  /** Original raw bytes — hash THESE, never re-stringify. */
   readonly raw: Uint8Array;
 }
 
-/**
- * Decoded COSE key (Key_ops + algorithm + algorithm-specific parameters).
- */
+/** Decoded COSE key (RFC 8152 Key_ops + algorithm + algorithm-specific parameters). */
 export interface ParsedCoseKey {
   readonly kty: number;
-  readonly alg: COSEAlgorithmIdentifier;
+  readonly alg: CoseAlgId;
   /** EC2 / OKP curve identifier (where applicable). */
   readonly crv?: number;
-  /** EC2/OKP x-coordinate or RSA modulus. */
+  /** EC2/OKP x-coordinate. */
   readonly x?: Uint8Array;
   /** EC2 y-coordinate. */
   readonly y?: Uint8Array;
   /** RSA public exponent. */
   readonly e?: Uint8Array;
-  /** RSA modulus (alias of x for RSA). */
+  /** RSA modulus. */
   readonly n?: Uint8Array;
 }

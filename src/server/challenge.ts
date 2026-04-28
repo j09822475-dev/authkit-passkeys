@@ -1,223 +1,282 @@
-import { PasskeyInternalError } from '../errors/internal.js';
+import {
+  InternalError,
+  InvalidChallengeTokenError,
+  WrongCeremonyError,
+} from '../errors/classes.js';
 import { fromBase64Url, toBase64Url } from '../core/encoding/base64url.js';
-import { encodeUtf8, decodeUtf8 } from '../core/encoding/utf8.js';
+import { decodeUtf8, encodeUtf8 } from '../core/encoding/utf8.js';
 import { randomBytes } from '../core/crypto/random.js';
-import { DEFAULT_CHALLENGE_TTL_MS } from './defaults.js';
+import type { Base64Url, ChallengeToken } from '../types/webauthn.js';
+import type { ChallengeSigningKeys } from '../types/options.js';
+import {
+  DEFAULT_CHALLENGE_BYTES,
+  DEFAULT_CHALLENGE_TTL_MS,
+  MAX_CHALLENGE_TTL_MS,
+  MIN_CHALLENGE_TTL_MS,
+} from './defaults.js';
 
-/**
- * Pluggable challenge persistence. The library issues an opaque token at
- * `startRegistration` / `startAuthentication`; the caller round-trips it back
- * to `finishRegistration` / `finishAuthentication`.
- *
- * Two implementations ship out of the box:
- * - {@link InMemoryChallengeStore} — for tests and demos.
- * - {@link SignedJwtChallengeStore} — stateless, with first-class `kid`-based
- *   key rotation so secret rotation never orphans in-flight ceremonies.
- */
-export interface ChallengeStore {
-  /** Mint a token bound to a challenge + optional userId + ttl. */
-  issue(input: { challenge: Uint8Array; userId?: Uint8Array; ttlMs: number }): Promise<string>;
-  /** Consume by token — returns the challenge and removes it (single-use). */
-  consume(token: string): Promise<{ challenge: Uint8Array; userId?: Uint8Array } | null>;
+/** Discriminator for the ceremony bound to a challenge envelope. */
+export type CeremonyKind = 'reg' | 'auth';
+
+/** Decoded envelope payload, only used internally. */
+interface EnvelopePayload {
+  /** Challenge bytes, base64url. */
+  ch: Base64Url;
+  /** Ceremony binding — `'reg'` or `'auth'`. */
+  c: CeremonyKind;
+  /** Issued-at, epoch seconds. */
+  iat: number;
+  /** Expiry, epoch seconds. */
+  exp: number;
+  /** Optional user binding, base64url. */
+  uid?: Base64Url;
 }
 
-interface InMemoryEntry {
-  challenge: Uint8Array;
-  userId?: Uint8Array;
-  expiresAt: number;
-}
-
-/**
- * Default in-memory challenge store. Single-process only. Suitable for tests
- * and single-instance demos; production multi-instance deploys should use
- * {@link SignedJwtChallengeStore} or implement {@link ChallengeStore} on Redis.
- *
- * @example
- *   const rp = new RelyingParty({ challengeStore: new InMemoryChallengeStore(), ... });
- */
-export class InMemoryChallengeStore implements ChallengeStore {
-  readonly #map = new Map<string, InMemoryEntry>();
-
-  /** @inheritdoc */
-  async issue(input: { challenge: Uint8Array; userId?: Uint8Array; ttlMs: number }): Promise<string> {
-    const token = toBase64Url(randomBytes(32));
-    this.#map.set(token, {
-      challenge: input.challenge,
-      ...(input.userId ? { userId: input.userId } : {}),
-      expiresAt: Date.now() + input.ttlMs,
-    });
-    return token;
-  }
-
-  /** @inheritdoc */
-  async consume(token: string): Promise<{ challenge: Uint8Array; userId?: Uint8Array } | null> {
-    const entry = this.#map.get(token);
-    if (!entry) return null;
-    this.#map.delete(token);
-    if (entry.expiresAt < Date.now()) return null;
-    return entry.userId ? { challenge: entry.challenge, userId: entry.userId } : { challenge: entry.challenge };
-  }
-
-  /** Drop expired entries — call from a periodic janitor. */
-  reap(now: number = Date.now()): void {
-    for (const [k, v] of this.#map.entries()) {
-      if (v.expiresAt < now) this.#map.delete(k);
-    }
-  }
-}
-
-/** Single key entry used by the JWT-backed store. */
-export interface SignedJwtKeyEntry {
-  /** Key identifier (kid header) — opaque, e.g. `'k-2026-04'`. */
+interface EnvelopeHeader {
+  alg: 'HS256';
+  typ: 'PSK1';
   kid: string;
-  /** HS256 secret. ≥ 32 bytes recommended. */
-  secret: Uint8Array | string;
 }
 
-export interface SignedJwtChallengeStoreOptions {
-  /**
-   * Verify against ANY key whose `kid` appears in the JWT header. Sign new
-   * tokens with the FIRST entry. To rotate: prepend the new key, leave the
-   * old one until ttlMs > maxChallengeTtl.
-   *
-   * Single-key form (`{ secret, kid? }`) is normalized to a one-element array.
-   */
-  keys: ReadonlyArray<SignedJwtKeyEntry> | SignedJwtKeyEntry | { secret: Uint8Array | string; kid?: string };
-  /** Default TTL applied if `issue()` does not specify one. */
-  defaultTtlMs?: number;
+interface NormalizedKey {
+  kid: string;
+  bytes: Uint8Array;
 }
 
 /**
- * Stateless, signed-JWT challenge store with first-class key rotation. Suitable
- * for serverless and multi-instance deploys (no DB round-trip).
+ * Mint a fresh challenge AND a signed envelope binding it to a ceremony, the
+ * active signing key (`kid`), and an optional `userId`. The server stays
+ * stateless — callers only have to round-trip the returned token.
  *
- * Token shape: HS256 JWT with `kid` header, payload `{ ch, uid?, exp, iat }`.
+ * @param input.signingKeys  Caller-supplied signing keys (active + previous).
+ * @param input.ceremony     `'reg'` or `'auth'` — bound into the envelope so a
+ *                           registration token cannot be replayed at the auth
+ *                           endpoint and vice-versa.
+ * @param input.userId       Optional binding — set for registration always,
+ *                           set for authentication only on non-discoverable flows.
+ * @param input.ttlMs        Token lifetime in ms. Default 5 min, min 30 s, max 10 min.
+ * @param input.challengeBytes  Challenge length (default 32).
+ * @returns                  `{ challenge, challengeToken }` — `challenge` is the
+ *                           raw bytes, `challengeToken` is the signed envelope
+ *                           the verifier will consume.
+ * @throws {InternalError}   When `ttlMs` is out of range or signing keys are missing.
  *
  * @example
- *   new SignedJwtChallengeStore({
- *     keys: [
- *       { kid: 'k-2026-04', secret: process.env.PASSKEY_SECRET_NEW! },
- *       { kid: 'k-2026-01', secret: process.env.PASSKEY_SECRET_OLD! },
- *     ],
+ *   const { challenge, challengeToken } = await issueChallenge({
+ *     signingKeys: PASSKEY_SIGNING_KEYS,
+ *     ceremony: 'reg',
+ *     userId: encodeUtf8(user.id),
  *   });
  */
-export class SignedJwtChallengeStore implements ChallengeStore {
-  readonly #keys: ReadonlyArray<{ kid: string; secret: Uint8Array }>;
-  readonly #defaultTtlMs: number;
-  readonly #seen = new Set<string>(); // single-use enforcement (best-effort)
-
-  constructor(options: SignedJwtChallengeStoreOptions) {
-    const raw = options.keys;
-    let arr: ReadonlyArray<SignedJwtKeyEntry>;
-    if (Array.isArray(raw)) {
-      arr = raw;
-    } else if (raw && typeof raw === 'object' && 'secret' in raw) {
-      arr = [{ kid: (raw as { kid?: string }).kid ?? 'default', secret: (raw as { secret: Uint8Array | string }).secret }];
-    } else {
-      throw new PasskeyInternalError('SignedJwtChallengeStore: keys is required.');
-    }
-    if (arr.length === 0) {
-      throw new PasskeyInternalError('SignedJwtChallengeStore: keys must be non-empty.');
-    }
-    this.#keys = arr.map((k) => ({
-      kid: k.kid,
-      secret: typeof k.secret === 'string' ? encodeUtf8(k.secret) : k.secret,
-    }));
-    this.#defaultTtlMs = options.defaultTtlMs ?? DEFAULT_CHALLENGE_TTL_MS;
+export async function issueChallenge(input: {
+  signingKeys: ChallengeSigningKeys;
+  ceremony: CeremonyKind;
+  userId?: Uint8Array;
+  ttlMs?: number;
+  challengeBytes?: number;
+}): Promise<{ challenge: Uint8Array; challengeToken: ChallengeToken }> {
+  const ttlMs = input.ttlMs ?? DEFAULT_CHALLENGE_TTL_MS;
+  if (ttlMs < MIN_CHALLENGE_TTL_MS || ttlMs > MAX_CHALLENGE_TTL_MS) {
+    throw new InternalError(
+      `challenge ttlMs ${ttlMs} out of range [${MIN_CHALLENGE_TTL_MS}, ${MAX_CHALLENGE_TTL_MS}].`,
+    );
   }
+  const active = normalizeActiveKey(input.signingKeys);
 
-  /** @inheritdoc */
-  async issue(input: { challenge: Uint8Array; userId?: Uint8Array; ttlMs?: number }): Promise<string> {
-    const active = this.#keys[0];
-    if (!active) throw new PasskeyInternalError('SignedJwtChallengeStore: no active key.');
-    const now = Math.floor(Date.now() / 1000);
-    const ttl = Math.floor((input.ttlMs ?? this.#defaultTtlMs) / 1000);
-    const header = { alg: 'HS256', typ: 'JWT', kid: active.kid };
-    const payload: Record<string, unknown> = {
-      ch: toBase64Url(input.challenge),
-      iat: now,
-      exp: now + ttl,
-      jti: toBase64Url(randomBytes(16)),
-    };
-    if (input.userId) payload['uid'] = toBase64Url(input.userId);
+  const challenge = randomBytes(input.challengeBytes ?? DEFAULT_CHALLENGE_BYTES);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttlSec = Math.floor(ttlMs / 1000);
 
-    const head = toBase64Url(encodeUtf8(JSON.stringify(header)));
-    const body = toBase64Url(encodeUtf8(JSON.stringify(payload)));
-    const signing = `${head}.${body}`;
-    const sig = await hmacSha256(active.secret, encodeUtf8(signing));
-    return `${signing}.${toBase64Url(sig)}`;
-  }
+  const header: EnvelopeHeader = { alg: 'HS256', typ: 'PSK1', kid: active.kid };
+  const payload: EnvelopePayload = {
+    ch: toBase64Url(challenge),
+    c: input.ceremony,
+    iat: nowSec,
+    exp: nowSec + ttlSec,
+    ...(input.userId ? { uid: toBase64Url(input.userId) } : {}),
+  };
 
-  /** @inheritdoc */
-  async consume(token: string): Promise<{ challenge: Uint8Array; userId?: Uint8Array } | null> {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const [head, body, sigB64] = parts as [string, string, string];
-
-    let header: { alg?: string; typ?: string; kid?: string };
-    let payload: { ch?: string; uid?: string; exp?: number; iat?: number; jti?: string };
-    try {
-      header = JSON.parse(decodeUtf8(fromBase64Url(head))) as typeof header;
-      payload = JSON.parse(decodeUtf8(fromBase64Url(body))) as typeof payload;
-    } catch {
-      return null;
-    }
-    if (header.alg !== 'HS256') return null;
-
-    const key = this.#keys.find((k) => k.kid === header.kid);
-    if (!key) return null;
-
-    const expected = await hmacSha256(key.secret, encodeUtf8(`${head}.${body}`));
-    let provided: Uint8Array;
-    try {
-      provided = fromBase64Url(sigB64);
-    } catch {
-      return null;
-    }
-    if (!timingSafeEqual(provided, expected)) return null;
-
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (typeof payload.exp !== 'number' || payload.exp < nowSec) return null;
-    if (typeof payload.ch !== 'string') return null;
-
-    if (payload.jti) {
-      if (this.#seen.has(payload.jti)) return null;
-      this.#seen.add(payload.jti);
-      // Best-effort cap on memory growth. With 5 min TTLs and modest traffic
-      // this is plenty; replace with a Redis SET for high-volume deploys.
-      if (this.#seen.size > 10_000) this.#seen.clear();
-    }
-
-    let challenge: Uint8Array;
-    try {
-      challenge = fromBase64Url(payload.ch);
-    } catch {
-      return null;
-    }
-    let userId: Uint8Array | undefined;
-    if (payload.uid) {
-      try {
-        userId = fromBase64Url(payload.uid);
-      } catch {
-        return null;
-      }
-    }
-    return userId ? { challenge, userId } : { challenge };
-  }
+  const head = toBase64Url(encodeUtf8(JSON.stringify(header)));
+  const body = toBase64Url(encodeUtf8(JSON.stringify(payload)));
+  const signing = `${head}.${body}`;
+  const sig = await hmac(active.bytes, encodeUtf8(signing));
+  const token = `${signing}.${toBase64Url(sig)}` as ChallengeToken;
+  return { challenge, challengeToken: token };
 }
 
-async function hmacSha256(secret: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+/**
+ * Verify a challenge envelope: HMAC tag (constant-time via `crypto.subtle.verify`),
+ * expiry, ceremony binding, and optional user binding.
+ *
+ * @param token        The token returned by {@link issueChallenge}.
+ * @param signingKeys  The same signing keys the issuer used (active + previous).
+ * @param ceremony     The ceremony this verifier expects (`'reg'` or `'auth'`).
+ * @param expectedUserId  Optional — when set, the envelope's `uid` must match.
+ * @returns            `{ challenge, userId? }` extracted from the verified envelope.
+ * @throws {InvalidChallengeTokenError}  Tag mismatch, expired, malformed.
+ * @throws {WrongCeremonyError}          Ceremony binding does not match.
+ *
+ * @example
+ *   const { challenge } = await verifyChallenge(token, signingKeys, 'reg');
+ */
+export async function verifyChallenge(
+  token: ChallengeToken | string,
+  signingKeys: ChallengeSigningKeys,
+  ceremony: CeremonyKind,
+  expectedUserId?: Uint8Array,
+): Promise<{ challenge: Uint8Array; userId: Uint8Array | undefined }> {
+  const parts = String(token).split('.');
+  if (parts.length !== 3) {
+    throw new InvalidChallengeTokenError(undefined, {
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+  const [headEnc, bodyEnc, sigEnc] = parts as [string, string, string];
+
+  let header: EnvelopeHeader;
+  let payload: EnvelopePayload;
+  try {
+    header = JSON.parse(decodeUtf8(fromBase64Url(headEnc))) as EnvelopeHeader;
+    payload = JSON.parse(decodeUtf8(fromBase64Url(bodyEnc))) as EnvelopePayload;
+  } catch (cause) {
+    throw new InvalidChallengeTokenError(undefined, {
+      cause,
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  if (header.alg !== 'HS256' || header.typ !== 'PSK1' || typeof header.kid !== 'string') {
+    throw new InvalidChallengeTokenError('Invalid envelope header.', {
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  const key = findKey(signingKeys, header.kid);
+  if (!key) {
+    throw new InvalidChallengeTokenError('Unknown signing-key kid.', {
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  let sig: Uint8Array;
+  try {
+    sig = fromBase64Url(sigEnc);
+  } catch (cause) {
+    throw new InvalidChallengeTokenError(undefined, {
+      cause,
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  const tagOk = await hmacVerify(key.bytes, sig, encodeUtf8(`${headEnc}.${bodyEnc}`));
+  if (!tagOk) {
+    throw new InvalidChallengeTokenError('Challenge envelope tag mismatch.', {
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  // Ceremony binding — checked AFTER tag verify so a forged token with a
+  // wrong ceremony still emits the unhelpful-to-attackers `invalid_challenge_token`
+  // (rather than `wrong_ceremony` which would confirm a valid signing key).
+  if (payload.c !== ceremony) {
+    throw new WrongCeremonyError(
+      `Token ceremony "${payload.c}" does not match expected "${ceremony}".`,
+      { details: { reason: 'challenge_malformed' } },
+    );
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== 'number' || payload.exp < nowSec) {
+    throw new InvalidChallengeTokenError('Challenge envelope expired.', {
+      details: { reason: 'challenge_expired' },
+    });
+  }
+
+  let challenge: Uint8Array;
+  try {
+    challenge = fromBase64Url(payload.ch);
+  } catch (cause) {
+    throw new InvalidChallengeTokenError(undefined, {
+      cause,
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  let userId: Uint8Array | undefined;
+  if (payload.uid) {
+    try {
+      userId = fromBase64Url(payload.uid);
+    } catch (cause) {
+      throw new InvalidChallengeTokenError(undefined, {
+        cause,
+        details: { reason: 'challenge_malformed' },
+      });
+    }
+  }
+
+  if (expectedUserId && userId && !timingSafeEqualBytes(userId, expectedUserId)) {
+    throw new InvalidChallengeTokenError('Token userId binding mismatch.', {
+      details: { reason: 'challenge_malformed' },
+    });
+  }
+
+  return { challenge, userId };
+}
+
+function normalizeActiveKey(keys: ChallengeSigningKeys): NormalizedKey {
+  if (!keys || !keys.active || !keys.active.kid || !keys.active.secret) {
+    throw new InternalError('signingKeys.active is required.');
+  }
+  return {
+    kid: keys.active.kid,
+    bytes: typeof keys.active.secret === 'string' ? encodeUtf8(keys.active.secret) : keys.active.secret,
+  };
+}
+
+function findKey(keys: ChallengeSigningKeys, kid: string): NormalizedKey | undefined {
+  if (keys.active && keys.active.kid === kid) {
+    return {
+      kid: keys.active.kid,
+      bytes:
+        typeof keys.active.secret === 'string' ? encodeUtf8(keys.active.secret) : keys.active.secret,
+    };
+  }
+  if (keys.previous) {
+    for (const k of keys.previous) {
+      if (k.kid === kid) {
+        return {
+          kid: k.kid,
+          bytes: typeof k.secret === 'string' ? encodeUtf8(k.secret) : k.secret,
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
+async function hmac(secret: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     'raw',
     secret,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ['sign', 'verify'],
+    ['sign'],
   );
   return new Uint8Array(await crypto.subtle.sign('HMAC', key, data));
 }
 
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
+async function hmacVerify(secret: Uint8Array, sig: Uint8Array, data: Uint8Array): Promise<boolean> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    secret,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  );
+  return crypto.subtle.verify('HMAC', key, sig, data);
+}
+
+function timingSafeEqualBytes(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= (a[i] as number) ^ (b[i] as number);

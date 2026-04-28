@@ -1,7 +1,7 @@
 import { PasskeyError } from '../../errors/base.js';
 
 /**
- * Decoded CBOR value. We only emit the subset relevant to WebAuthn:
+ * Decoded CBOR value. The library only emits the subset relevant to WebAuthn:
  * unsigned/negative integers, byte strings, text strings, arrays, maps,
  * tagged values, booleans, null/undefined, and floats.
  */
@@ -37,9 +37,8 @@ const MAJOR_SIMPLE = 7;
  * and attestation objects). Hand-written to keep the bundle ~1 KB.
  *
  * @param input  CBOR-encoded bytes.
- * @returns      `{ value, bytesRead }` — `value` is the decoded structure;
- *               `bytesRead` lets callers split off trailing data.
- * @throws {PasskeyError}  Code `'malformed-response'` for any malformed input.
+ * @returns      `{ value, bytesRead }` — `bytesRead` lets callers split off trailing data.
+ * @throws {PasskeyError}  Code `'invalid_attestation'` for any malformed input.
  *
  * @example
  *   const { value: attObj, bytesRead } = decodeCbor(attestationBytes);
@@ -56,7 +55,7 @@ export function decodeCbor(input: Uint8Array): { value: CborValue; bytesRead: nu
 
 function decodeItem(state: CursorState): CborValue {
   if (state.offset >= state.bytes.length) {
-    throw new PasskeyError('malformed-response', 'CBOR truncated.');
+    throw bad('CBOR truncated.');
   }
   const initialByte = state.bytes[state.offset++] as number;
   const major = initialByte >> 5;
@@ -77,7 +76,6 @@ function decodeItem(state: CursorState): CborValue {
       const len = toNumber(length);
       const slice = state.bytes.subarray(state.offset, state.offset + len);
       state.offset += len;
-      // Copy so callers can mutate without affecting the underlying buffer.
       return slice.slice();
     }
     case MAJOR_TEXT: {
@@ -105,7 +103,7 @@ function decodeItem(state: CursorState): CborValue {
     case MAJOR_TAG:
       return { tag: toNumber(length), value: decodeItem(state) };
     default:
-      throw new PasskeyError('malformed-response', `Unsupported CBOR major type ${major}.`);
+      throw bad(`Unsupported CBOR major type ${major}.`);
   }
 }
 
@@ -132,7 +130,7 @@ function readLength(state: CursorState, minor: number): number | bigint {
       return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : n;
     }
     default:
-      throw new PasskeyError('malformed-response', `Unsupported CBOR length encoding ${minor}.`);
+      throw bad(`Unsupported CBOR length encoding ${minor}.`);
   }
 }
 
@@ -162,7 +160,7 @@ function decodeSimple(state: CursorState, minor: number): CborValue {
       return n;
     }
     default:
-      throw new PasskeyError('malformed-response', `Unsupported CBOR simple value ${minor}.`);
+      throw bad(`Unsupported CBOR simple value ${minor}.`);
   }
 }
 
@@ -171,7 +169,7 @@ function decodeFloat16(half: number): number {
   const exp = (half & 0x7c00) >> 10;
   const frac = half & 0x03ff;
   let value: number;
-  if (exp === 0) value = (frac === 0 ? 0 : Math.pow(2, -14) * (frac / 1024));
+  if (exp === 0) value = frac === 0 ? 0 : Math.pow(2, -14) * (frac / 1024);
   else if (exp === 31) value = frac === 0 ? Infinity : NaN;
   else value = Math.pow(2, exp - 15) * (1 + frac / 1024);
   return sign === 0 ? value : -value;
@@ -180,7 +178,13 @@ function decodeFloat16(half: number): number {
 function toNumber(n: number | bigint): number {
   if (typeof n === 'number') return n;
   if (n > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new PasskeyError('malformed-response', 'CBOR length exceeds Number.MAX_SAFE_INTEGER.');
+    throw bad('CBOR length exceeds Number.MAX_SAFE_INTEGER.');
   }
   return Number(n);
+}
+
+function bad(msg: string): PasskeyError {
+  return new PasskeyError('invalid_attestation', msg, {
+    details: { reason: 'attestation_statement_invalid' },
+  });
 }

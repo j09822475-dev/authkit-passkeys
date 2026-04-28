@@ -1,4 +1,4 @@
-import type { AuthenticatorFlags } from '../../types/flags.js';
+import type { AuthenticatorFlags } from '../../types/webauthn.js';
 
 const UP = 0x01;
 const UV = 0x04;
@@ -11,11 +11,11 @@ const ED = 0x80;
  * Decode the authenticator-data flag byte into a typed structure.
  *
  * @param byte  Single flag byte (offset 32 of `authenticatorData`).
- * @returns     {@link AuthenticatorFlags}
+ * @returns     {@link AuthenticatorFlags}.
  *
  * @example
  *   const flags = decodeFlags(authData[32]);
- *   if (!flags.uv) return err(...);
+ *   if (!flags.uv) throw new UserVerificationRequiredError();
  */
 export function decodeFlags(byte: number): AuthenticatorFlags {
   return {

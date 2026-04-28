@@ -1,14 +1,20 @@
 import { PasskeyError } from '../../errors/base.js';
 
 /**
- * Convert a DER-SEQUENCE-encoded ECDSA signature (`SEQUENCE { INTEGER r, INTEGER s }`)
- * into the raw `r||s` form Web Crypto expects. Each component is left-padded to
- * `componentLength` bytes (32 for P-256, 48 for P-384, 66 for P-521).
+ * Convert a DER-SEQUENCE-encoded ECDSA signature
+ * (`SEQUENCE { INTEGER r, INTEGER s }`) into the raw `r||s` form Web Crypto
+ * expects. Each component is left-padded to `componentLength` bytes (32 for
+ * P-256, 48 for P-384, 66 for P-521).
+ *
+ * Strict — invalid DER throws `'invalid_attestation'` so a malformed
+ * signature collapses to the same boundary code as a verifying-but-incorrect
+ * signature. This intentionally does not differentiate to a probing client
+ * (PLAN §9.3).
  *
  * @param der               DER-encoded signature bytes.
- * @param componentLength   Curve-dependent component length in bytes.
+ * @param componentLength   Curve-dependent component length in bytes (32 / 48 / 66).
  * @returns                 Concatenated raw signature (length = 2 × componentLength).
- * @throws {PasskeyError}   Code `'malformed-response'` when the DER structure is invalid.
+ * @throws {PasskeyError}   Code `'invalid_attestation'` when the DER structure is invalid.
  *
  * @example
  *   const raw = derToRawEcdsa(derSig, 32);
@@ -39,7 +45,6 @@ export function derToRawEcdsa(der: Uint8Array, componentLength: number): Uint8Ar
 }
 
 function copyComponent(src: Uint8Array, dst: Uint8Array, offset: number, len: number): void {
-  // Strip leading 0x00 sign-padding byte, then left-pad with zeros to `len`.
   let start = 0;
   while (start < src.length - 1 && src[start] === 0) start++;
   const trimmed = src.subarray(start);
@@ -59,8 +64,8 @@ function readLen(buf: Uint8Array, i: number): { length: number; next: number } {
   return { length, next: i + 1 + n };
 }
 
-function bad(message: string): PasskeyError {
-  return new PasskeyError('malformed-response', `DER: ${message}`, {
-    details: { reason: 'bad-signature' },
+function bad(msg: string): PasskeyError {
+  return new PasskeyError('invalid_attestation', `DER: ${msg}`, {
+    details: { reason: 'invalid_signature' },
   });
 }

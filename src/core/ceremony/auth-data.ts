@@ -1,5 +1,5 @@
 import { PasskeyError } from '../../errors/base.js';
-import type { ParsedAuthenticatorData } from '../../types/ceremony.js';
+import type { ParsedAuthenticatorData } from '../../types/parsed.js';
 import { decodeFlags } from './flags.js';
 import { decodeCbor } from '../cose/cbor.js';
 
@@ -7,21 +7,24 @@ import { decodeCbor } from '../cose/cbor.js';
  * Parse the WebAuthn `authenticatorData` byte structure.
  *
  * Layout (WebAuthn L3 §6.1):
- *   rpIdHash (32) || flags (1) || signCount (4 BE) || [attCredData] || [extensions]
+ *   `rpIdHash (32) || flags (1) || signCount (4 BE) || [attCredData] || [extensions]`
+ *
+ * The COSE-key map at the tail of attested credential data is decoded only
+ * to advance the cursor — the raw bytes are returned on
+ * `attestedCredentialData.credentialPublicKey` for downstream parsing /
+ * SPKI export.
  *
  * @param bytes  Raw `authenticatorData` bytes.
- * @returns      Typed {@link ParsedAuthenticatorData} with the original byte slice retained on `.raw`.
- * @throws {PasskeyError}  Code `'malformed-response'` for truncated or otherwise invalid input.
+ * @returns      {@link ParsedAuthenticatorData} with `.raw` retained for signature verification.
+ * @throws {PasskeyError}  Code `'invalid_attestation'` for truncated / malformed input.
  *
  * @example
  *   const ad = parseAuthenticatorData(authDataBytes);
- *   if (!ad.flags.up) return err(...);
+ *   if (!ad.flags.up) throw new AuthenticationFailedError();
  */
 export function parseAuthenticatorData(bytes: Uint8Array): ParsedAuthenticatorData {
   if (bytes.length < 37) {
-    throw new PasskeyError('malformed-response', `authenticatorData too short: ${bytes.length} < 37.`, {
-      details: { reason: 'authenticator-data-parse-failed' },
-    });
+    throw bad(`authenticatorData too short: ${bytes.length} < 37.`);
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const rpIdHash = bytes.subarray(0, 32).slice();
@@ -34,23 +37,18 @@ export function parseAuthenticatorData(bytes: Uint8Array): ParsedAuthenticatorDa
 
   if (flags.at) {
     if (bytes.length < offset + 18) {
-      throw new PasskeyError('malformed-response', 'authenticatorData truncated in attested credential data header.', {
-        details: { reason: 'authenticator-data-parse-failed' },
-      });
+      throw bad('authenticatorData truncated in attested credential data header.');
     }
     const aaguid = bytes.subarray(offset, offset + 16).slice();
     offset += 16;
     const credIdLen = view.getUint16(offset);
     offset += 2;
     if (bytes.length < offset + credIdLen) {
-      throw new PasskeyError('malformed-response', 'authenticatorData truncated in credentialId.', {
-        details: { reason: 'authenticator-data-parse-failed' },
-      });
+      throw bad('authenticatorData truncated in credentialId.');
     }
     const credentialId = bytes.subarray(offset, offset + credIdLen).slice();
     offset += credIdLen;
 
-    // The COSE key consumes a CBOR map; decode-and-measure to advance the cursor exactly.
     const keySlice = bytes.subarray(offset);
     const { bytesRead } = decodeCbor(keySlice);
     const credentialPublicKey = bytes.subarray(offset, offset + bytesRead).slice();
@@ -67,7 +65,7 @@ export function parseAuthenticatorData(bytes: Uint8Array): ParsedAuthenticatorDa
     offset += bytesRead;
   }
 
-  const result: ParsedAuthenticatorData = {
+  return {
     rpIdHash,
     flags,
     signCount,
@@ -75,5 +73,10 @@ export function parseAuthenticatorData(bytes: Uint8Array): ParsedAuthenticatorDa
     ...(attestedCredentialData ? { attestedCredentialData } : {}),
     ...(extensions ? { extensions } : {}),
   };
-  return result;
+}
+
+function bad(msg: string): PasskeyError {
+  return new PasskeyError('invalid_attestation', msg, {
+    details: { reason: 'authenticator_data_parse_failed' },
+  });
 }
